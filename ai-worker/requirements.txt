@@ -1,6 +1,5 @@
 # ===== AI Worker - Whisper STT Server =====
 # faster-whisper 기반 로컬 음성 인식 서버
-# Docker 불필요 - Python 직접 실행
 
 # STT 엔진 (CTranslate2 기반, CPU 최적화)
 faster-whisper==1.1.0
@@ -8,5 +7,8 @@ faster-whisper==1.1.0
 # HTTP 서버
 flask==3.1.0
 
-# Windows WSGI 서버 (production용)
+# huggingface_hub 의존성 (모델 다운로드 시 필요)
+requests>=2.28.0
+
+# Production WSGI 서버
 waitress==3.0.2

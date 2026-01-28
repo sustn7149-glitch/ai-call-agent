@@ -96,7 +96,6 @@ services:
     volumes:
       - recordings:/data/recordings
       - backend_data:/data/db
-      - ./dashboard/dist:/app/public:ro
     depends_on:
       redis:
         condition: service_healthy

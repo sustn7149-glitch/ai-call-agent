@@ -11,7 +11,9 @@ class FileObserverService : Service() {
 
     companion object {
         private const val TAG = "FileObserverService"
-        private const val CHANNEL_ID = "FileObserverChannel"
+        private const val CHANNEL_ID = "Call_Agent_Channel_V3_Final"
+        private const val OLD_CHANNEL_ID = "FileObserverChannel"
+        private const val OLD_CHANNEL_ID_V2 = "FileObserverChannel_V2"
         private const val NOTIFICATION_ID = 1001
 
         // Samsung default call recording paths
@@ -29,12 +31,13 @@ class FileObserverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "🚀 FileObserverService created")
+        Log.d(TAG, "FileObserverService created")
+        deleteOldChannel()
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "🟢 FileObserverService started")
+        Log.d(TAG, "FileObserverService started")
 
         startForeground(NOTIFICATION_ID, createNotification())
         startWatching()
@@ -42,20 +45,33 @@ class FileObserverService : Service() {
         return START_STICKY
     }
 
+    private fun deleteOldChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.deleteNotificationChannel(OLD_CHANNEL_ID)
+            manager.deleteNotificationChannel(OLD_CHANNEL_ID_V2)
+            Log.d(TAG, "Deleted old channels: $OLD_CHANNEL_ID, $OLD_CHANNEL_ID_V2")
+        }
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "통화 녹음 감시",
+                "통화 감시 (저소음)",
                 NotificationManager.IMPORTANCE_MIN
             ).apply {
                 description = "통화 녹음 파일을 감시하고 자동으로 업로드합니다"
                 setShowBadge(false)
                 lockscreenVisibility = Notification.VISIBILITY_SECRET
+                enableLights(false)
+                enableVibration(false)
+                setSound(null, null)
             }
 
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
+            Log.d(TAG, "Created notification channel: $CHANNEL_ID (IMPORTANCE_MIN)")
         }
     }
 
@@ -86,12 +102,12 @@ class FileObserverService : Service() {
         val watchPath = WATCH_PATHS.firstOrNull { File(it).exists() }
 
         if (watchPath == null) {
-            Log.w(TAG, "⚠️ No recording folder found. Creating default...")
+            Log.w(TAG, "No recording folder found. Creating default...")
             val defaultPath = WATCH_PATHS[0]
             File(defaultPath).mkdirs()
             startWatchingPath(defaultPath)
         } else {
-            Log.d(TAG, "📁 Watching folder: $watchPath")
+            Log.d(TAG, "Watching folder: $watchPath")
             startWatchingPath(watchPath)
         }
     }
@@ -107,10 +123,10 @@ class FileObserverService : Service() {
 
                 when (event) {
                     CREATE -> {
-                        Log.d(TAG, "📄 File created: $path")
+                        Log.d(TAG, "File created: $path")
                     }
                     CLOSE_WRITE -> {
-                        Log.d(TAG, "✅ File write complete: $path")
+                        Log.d(TAG, "File write complete: $path")
 
                         // Debounce: wait a bit before uploading
                         if (!pendingFiles.contains(fullPath)) {
@@ -127,15 +143,15 @@ class FileObserverService : Service() {
         }
 
         fileObserver?.startWatching()
-        Log.d(TAG, "👀 FileObserver started for: $path")
+        Log.d(TAG, "FileObserver started for: $path")
     }
 
     private fun uploadFile(filePath: String) {
-        Log.d(TAG, "📤 Uploading file: $filePath")
+        Log.d(TAG, "Uploading file: $filePath")
 
         val file = File(filePath)
         if (!file.exists()) {
-            Log.e(TAG, "❌ File not found: $filePath")
+            Log.e(TAG, "File not found: $filePath")
             return
         }
 
@@ -158,6 +174,6 @@ class FileObserverService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         fileObserver?.stopWatching()
-        Log.d(TAG, "🛑 FileObserverService destroyed")
+        Log.d(TAG, "FileObserverService destroyed")
     }
 }

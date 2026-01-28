@@ -75,11 +75,11 @@
 
     </LinearLayout>
 
-    <!-- Server Info (tiny) -->
+    <!-- Server Info -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="v1.1"
+        android:text="v2.0"
         android:textSize="10sp"
         android:textColor="#CCCCCC"
         android:layout_marginTop="32dp" />

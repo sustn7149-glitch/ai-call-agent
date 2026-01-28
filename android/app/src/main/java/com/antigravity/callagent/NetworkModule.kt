@@ -1,5 +1,6 @@
 package com.antigravity.callagent
 
+import android.util.Log
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
@@ -51,14 +52,18 @@ interface ApiService {
 
 object NetworkModule {
 
-    // 서버 주소 (Cloudflare Tunnel → N100 Ubuntu)
+    private const val TAG = "NetworkModule"
+
+    // 서버 주소 (Cloudflare Tunnel -> N100 Ubuntu)
     const val DEFAULT_URL = "https://api.wiselymobile.net/"
     var BASE_URL = DEFAULT_URL
 
     private var retrofit: Retrofit? = null
     private var apiService: ApiService? = null
 
-    private val loggingInterceptor = HttpLoggingInterceptor().apply {
+    private val loggingInterceptor = HttpLoggingInterceptor { message ->
+        Log.d("OkHttp", message)
+    }.apply {
         level = HttpLoggingInterceptor.Level.BODY
     }
 
@@ -78,6 +83,7 @@ object NetworkModule {
         }
 
     private fun createApi() {
+        Log.d(TAG, "Creating Retrofit client with BASE_URL: $BASE_URL")
         retrofit = Retrofit.Builder()
             .baseUrl(BASE_URL)
             .client(okHttpClient)
@@ -85,10 +91,13 @@ object NetworkModule {
             .build()
 
         apiService = retrofit!!.create(ApiService::class.java)
+        Log.d(TAG, "Retrofit client created successfully")
     }
 
     fun updateBaseUrl(newUrl: String) {
-        BASE_URL = if (newUrl.endsWith("/")) newUrl else "$newUrl/"
+        val normalizedUrl = if (newUrl.endsWith("/")) newUrl else "$newUrl/"
+        Log.d(TAG, "Updating BASE_URL: $BASE_URL -> $normalizedUrl")
+        BASE_URL = normalizedUrl
         retrofit = null
         apiService = null
     }

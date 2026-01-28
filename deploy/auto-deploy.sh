@@ -37,15 +37,12 @@ log "Git pull completed"
 CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
 log "Changed files: $CHANGED_FILES"
 
-# Dashboard 변경 감지 → 프론트엔드만 리빌드
+# Dashboard 변경 감지 → backend 컨테이너 리빌드 (멀티스테이지 빌드에 포함)
 if echo "$CHANGED_FILES" | grep -q "^dashboard/"; then
-  log "Dashboard changed - rebuilding..."
-  docker run --rm \
-    -v "${PROJECT_DIR}/dashboard:/app" \
-    -w /app \
-    node:20-alpine \
-    sh -c "npm install --silent && npm run build" >> "$LOG_FILE" 2>&1
-  log "Dashboard rebuild completed"
+  log "Dashboard changed - rebuilding backend container (includes dashboard build)..."
+  cd "$PROJECT_DIR"
+  docker compose up -d --build backend >> "$LOG_FILE" 2>&1
+  log "Dashboard + Backend rebuild completed"
 fi
 
 # Backend 변경 감지 → 컨테이너 리빌드

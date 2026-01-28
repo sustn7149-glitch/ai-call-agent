@@ -66,7 +66,7 @@ class MainActivity : AppCompatActivity() {
                 PERMISSION_REQUEST_CODE
             )
         } else {
-            // 모든 권한 이미 허용됨 → 자동 시작
+            // 모든 권한 이미 허용됨 -> 자동 시작
             checkStorageAndStart()
         }
 
@@ -102,28 +102,47 @@ class MainActivity : AppCompatActivity() {
     private fun autoStartSequence() {
         binding.tvStatus.text = "서버 연결 중..."
         Log.d(TAG, "Auto-start sequence initiated")
+        Log.d(TAG, "Target server: ${NetworkModule.BASE_URL}")
 
         lifecycleScope.launch {
             // Step 1: 서버 연결 확인 (최대 3회 재시도)
             var connected = false
             for (attempt in 1..3) {
                 try {
-                    Log.d(TAG, "Connection attempt $attempt/3 to ${NetworkModule.BASE_URL}")
+                    val url = "${NetworkModule.BASE_URL}health"
+                    Log.d(TAG, "Connection attempt $attempt/3 -> $url")
                     val response = NetworkModule.api.healthCheck()
+
                     if (response.isSuccessful) {
                         connected = true
-                        Log.d(TAG, "Server connected: ${response.body()}")
+                        val body = response.body()
+                        Log.d(TAG, "Server connected! status=${body?.status}, timestamp=${body?.timestamp}")
                         break
+                    } else {
+                        val errorBody = response.errorBody()?.string() ?: "no body"
+                        Log.e(TAG, "Attempt $attempt failed: HTTP ${response.code()} ${response.message()} | body=$errorBody")
                     }
+                } catch (e: java.net.UnknownHostException) {
+                    Log.e(TAG, "Attempt $attempt: DNS resolution failed for ${NetworkModule.BASE_URL} - ${e.message}")
+                } catch (e: java.net.ConnectException) {
+                    Log.e(TAG, "Attempt $attempt: Connection refused - ${e.message}")
+                } catch (e: javax.net.ssl.SSLException) {
+                    Log.e(TAG, "Attempt $attempt: SSL error - ${e.message}", e)
+                } catch (e: java.net.SocketTimeoutException) {
+                    Log.e(TAG, "Attempt $attempt: Timeout after 30s - ${e.message}")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Connection attempt $attempt failed: ${e.message}")
-                    if (attempt < 3) delay(2000)
+                    Log.e(TAG, "Attempt $attempt: ${e.javaClass.simpleName} - ${e.message}", e)
+                }
+
+                if (attempt < 3) {
+                    Log.d(TAG, "Retrying in 3 seconds...")
+                    delay(3000)
                 }
             }
 
             if (connected) {
-                // Step 2: 서버 연결 성공 → 서비스 자동 시작
-                binding.tvStatus.text = "서버 연결됨"
+                // Step 2: 서버 연결 성공 -> 서비스 자동 시작
+                binding.tvStatus.text = "서버 연결됨 (${NetworkModule.BASE_URL})"
                 startFileObserverService()
                 binding.tvServiceStatus.text = "감시 중"
                 binding.tvIndicator.text = "●"
@@ -135,7 +154,7 @@ class MainActivity : AppCompatActivity() {
                 binding.tvServiceStatus.text = "중지됨"
                 binding.tvIndicator.text = "●"
                 binding.tvIndicator.setTextColor(getColor(android.R.color.holo_red_dark))
-                Log.e(TAG, "Failed to connect after 3 attempts")
+                Log.e(TAG, "FAILED to connect after 3 attempts to ${NetworkModule.BASE_URL}")
             }
         }
     }
