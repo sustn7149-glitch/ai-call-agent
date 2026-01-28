@@ -1,0 +1,17 @@
+# Git
+.git
+.gitignore
+
+# Node modules (각 스테이지에서 npm ci로 설치)
+**/node_modules
+**/.env
+
+# Android (Docker 빌드에 불필요)
+android/
+
+# Deploy scripts
+deploy/
+
+# Misc
+*.md
+.vscode

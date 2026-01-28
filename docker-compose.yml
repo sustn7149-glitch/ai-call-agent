@@ -1,0 +1,145 @@
+# ===== AI Call Agent - Docker Compose =====
+# N100 Ubuntu Server (16GB RAM)
+# n8n과 함께 운영 - 총 메모리 사용량 ~8.5GB (여유 ~7.5GB)
+#
+# 실행: docker compose up -d
+# 중지: docker compose down
+# 로그: docker compose logs -f
+# Ollama 모델 설치: docker compose exec ollama ollama pull exaone3.5:2.4b
+
+services:
+  # ===== Redis =====
+  # Bull Queue 메시지 브로커
+  redis:
+    image: redis:7-alpine
+    container_name: call-agent-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - call-agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ===== Whisper STT Server =====
+  # faster-whisper (CTranslate2) 기반 음성-텍스트 변환
+  # CPU int8 양자화 적용 - N100 저전력 CPU 최적화
+  stt-server:
+    build:
+      context: ./ai-worker
+      dockerfile: Dockerfile
+    container_name: call-agent-stt
+    restart: unless-stopped
+    environment:
+      - WHISPER_MODEL=small
+      - STT_PORT=9000
+    volumes:
+      - whisper_cache:/root/.cache
+    networks:
+      - call-agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # ===== Ollama LLM =====
+  # EXAONE 3.5 2.4B - LG AI Research 한국어 특화 모델
+  ollama:
+    image: ollama/ollama:latest
+    container_name: call-agent-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - call-agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ===== Backend API Server =====
+  # Node.js Express + Socket.io + Bull Queue Worker
+  # 분석 파이프라인: Upload → Queue → Whisper STT → Ollama AI → DB 저장
+  # 대시보드 정적 파일도 함께 서빙 (멀티스테이지 빌드)
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: call-agent-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - WHISPER_URL=http://stt-server:9000/asr
+      - OLLAMA_URL=http://ollama:11434/api/generate
+      - OLLAMA_MODEL=exaone3.5:2.4b
+      - DB_PATH=/data/db/database.sqlite
+      - RECORDINGS_PATH=/data/recordings
+      - DASHBOARD_PATH=/app/public
+    volumes:
+      - recordings:/data/recordings
+      - backend_data:/data/db
+      - ./dashboard/dist:/app/public:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      stt-server:
+        condition: service_started
+      ollama:
+        condition: service_started
+    networks:
+      - call-agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ===== Cloudflare Tunnel =====
+  # api.wiselymobile.net → backend:3000
+  # 토큰은 .env 파일에서 로드
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: call-agent-tunnel
+    restart: unless-stopped
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - call-agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    depends_on:
+      - backend
+
+networks:
+  call-agent-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    name: call-agent-redis-data
+  whisper_cache:
+    name: call-agent-whisper-cache
+  ollama_data:
+    name: call-agent-ollama-data
+  recordings:
+    name: call-agent-recordings
+  backend_data:
+    name: call-agent-backend-data
