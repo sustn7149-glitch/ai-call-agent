@@ -15,6 +15,16 @@ const saveDatabase = () => {
   }
 };
 
+// 컬럼 존재 여부 확인 후 추가
+const addColumnIfNotExists = (table, column, type) => {
+  try {
+    db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    console.log(`✅ Column added: ${table}.${column}`);
+  } catch (e) {
+    // Column already exists - ignore
+  }
+};
+
 // 데이터베이스 초기화 (비동기)
 const initDB = async () => {
   const SQL = await initSqlJs();
@@ -59,6 +69,10 @@ const initDB = async () => {
     )
   `);
 
+  // 업로더 정보 컬럼 추가 (기존 DB 마이그레이션)
+  addColumnIfNotExists('calls', 'uploader_name', 'TEXT');
+  addColumnIfNotExists('calls', 'uploader_phone', 'TEXT');
+
   saveDatabase();
   console.log("✅ Database initialized");
 };
@@ -83,18 +97,33 @@ module.exports = {
     return { lastInsertRowid: result[0]?.values[0]?.[0] };
   },
 
-  updateRecording: (phoneNumber, filePath) => {
+  updateRecording: (phoneNumber, filePath, uploaderName, uploaderPhone) => {
     if (!db) throw new Error("Database not initialized");
 
-    // sql.js는 ORDER BY + LIMIT이 UPDATE에서 지원 안됨 -> 서브쿼리 사용
     db.run(
-      `UPDATE calls SET recording_path = ?, status = 'COMPLETED'
+      `UPDATE calls SET recording_path = ?, status = 'COMPLETED',
+              uploader_name = ?, uploader_phone = ?
        WHERE id = (SELECT id FROM calls WHERE phone_number = ? ORDER BY id DESC LIMIT 1)`,
-      [filePath, phoneNumber]
+      [filePath, uploaderName || null, uploaderPhone || null, phoneNumber]
     );
     saveDatabase();
 
     return { changes: db.getRowsModified() };
+  },
+
+  // 업로드로 새 레코드 생성 (매칭 통화 없을 때)
+  saveUploadRecord: (phoneNumber, filePath, uploaderName, uploaderPhone) => {
+    if (!db) throw new Error("Database not initialized");
+
+    db.run(
+      `INSERT INTO calls (phone_number, status, recording_path, uploader_name, uploader_phone)
+       VALUES (?, 'COMPLETED', ?, ?, ?)`,
+      [phoneNumber || 'UNKNOWN', filePath, uploaderName || null, uploaderPhone || null]
+    );
+    saveDatabase();
+
+    const result = db.exec("SELECT last_insert_rowid() as id");
+    return { lastInsertRowid: result[0]?.values[0]?.[0] };
   },
 
   // 전체 통화 조회 (테스트용)
@@ -110,6 +139,7 @@ module.exports = {
       `SELECT
         c.id, c.call_id, c.phone_number, c.direction, c.status,
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
+        c.uploader_name, c.uploader_phone,
         a.transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
@@ -170,6 +200,7 @@ module.exports = {
       `SELECT
         c.id, c.call_id, c.phone_number, c.direction, c.status,
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
+        c.uploader_name, c.uploader_phone,
         a.transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c

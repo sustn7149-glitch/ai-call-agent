@@ -33,6 +33,15 @@ data class UploadResponse(
     val filename: String?
 )
 
+data class HeartbeatRequest(
+    val userName: String,
+    val userPhone: String
+)
+
+data class HeartbeatResponse(
+    val success: Boolean
+)
+
 // API Interface
 interface ApiService {
 
@@ -46,8 +55,13 @@ interface ApiService {
     @POST("api/upload")
     suspend fun uploadFile(
         @Part file: MultipartBody.Part,
-        @Part("phoneNumber") phoneNumber: RequestBody
+        @Part("phoneNumber") phoneNumber: RequestBody,
+        @Part("userName") userName: RequestBody,
+        @Part("userPhone") userPhone: RequestBody
     ): Response<UploadResponse>
+
+    @POST("api/heartbeat")
+    suspend fun sendHeartbeat(@Body request: HeartbeatRequest): Response<HeartbeatResponse>
 }
 
 object NetworkModule {

@@ -1,6 +1,8 @@
 package com.antigravity.callagent
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,7 +20,13 @@ object UploadService {
     fun uploadFile(context: Context, file: File, phoneNumber: String) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                Log.d(TAG, "📤 Starting upload: ${file.name}")
+                // Wi-Fi only check
+                if (UserPreferences.isWifiOnly(context) && !isOnWifi(context)) {
+                    Log.d(TAG, "Skipping upload (Wi-Fi only mode, current: mobile) - ${file.name}")
+                    return@launch
+                }
+
+                Log.d(TAG, "Starting upload: ${file.name}")
 
                 val requestFile = file.asRequestBody("audio/*".toMediaTypeOrNull())
                 val filePart = MultipartBody.Part.createFormData(
@@ -28,22 +36,36 @@ object UploadService {
                 )
                 val phoneNumberPart = phoneNumber.toRequestBody("text/plain".toMediaTypeOrNull())
 
-                val response = NetworkModule.api.uploadFile(filePart, phoneNumberPart)
+                // Registered user info
+                val userName = UserPreferences.getUserName(context)
+                val userPhone = UserPreferences.getPhone(context)
+                val userNamePart = userName.toRequestBody("text/plain".toMediaTypeOrNull())
+                val userPhonePart = userPhone.toRequestBody("text/plain".toMediaTypeOrNull())
+
+                val response = NetworkModule.api.uploadFile(
+                    filePart, phoneNumberPart, userNamePart, userPhonePart
+                )
 
                 if (response.isSuccessful) {
-                    Log.d(TAG, "✅ Upload successful: ${response.body()?.filename}")
+                    Log.d(TAG, "Upload successful: ${response.body()?.filename} (user=$userName)")
                 } else {
-                    Log.e(TAG, "❌ Upload failed: ${response.code()} - ${response.message()}")
+                    Log.e(TAG, "Upload failed: ${response.code()} - ${response.message()}")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "❌ Upload error: ${e.message}", e)
+                Log.e(TAG, "Upload error: ${e.message}", e)
             }
         }
     }
 
+    private fun isOnWifi(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
     suspend fun testUpload(context: Context): Boolean {
         return try {
-            // Create a small test file
             val testFile = File(context.cacheDir, "test_upload.txt")
             testFile.writeText("AI Call Agent Test Upload - ${System.currentTimeMillis()}")
 
@@ -54,14 +76,20 @@ object UploadService {
                 requestFile
             )
             val phoneNumberPart = "TEST-000-0000".toRequestBody("text/plain".toMediaTypeOrNull())
+            val userNamePart = UserPreferences.getUserName(context)
+                .toRequestBody("text/plain".toMediaTypeOrNull())
+            val userPhonePart = UserPreferences.getPhone(context)
+                .toRequestBody("text/plain".toMediaTypeOrNull())
 
-            val response = NetworkModule.api.uploadFile(filePart, phoneNumberPart)
+            val response = NetworkModule.api.uploadFile(
+                filePart, phoneNumberPart, userNamePart, userPhonePart
+            )
 
             testFile.delete()
 
             response.isSuccessful
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Test upload error: ${e.message}", e)
+            Log.e(TAG, "Test upload error: ${e.message}", e)
             false
         }
     }

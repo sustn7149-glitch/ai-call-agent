@@ -1,59 +1,110 @@
 package com.antigravity.callagent
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import com.antigravity.callagent.databinding.ActivityMainBinding
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val PERMISSION_REQUEST_CODE = 100
     private val TAG = "MainActivity"
+    private var isMonitoring = false
 
-    private val requiredPermissions = arrayOf(
+    private val requiredPermissions = mutableListOf(
         Manifest.permission.READ_PHONE_STATE,
         Manifest.permission.READ_CALL_LOG,
-        Manifest.permission.READ_EXTERNAL_STORAGE,
         Manifest.permission.POST_NOTIFICATIONS
-    )
+    ).apply {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+            add(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }.toTypedArray()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Registration check - redirect if not registered
+        if (!UserPreferences.isRegistered(this)) {
+            startActivity(Intent(this, RegisterActivity::class.java))
+            finish()
+            return
+        }
+
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        setupUI()
+        // Initial UI
+        setIndicatorColor(COLOR_GRAY)
+        binding.tvStatus.text = "연결 확인 중..."
+        binding.tvSubStatus.text = ""
+
         checkAndRequestPermissions()
+        requestBatteryOptimizationExemption()
+        scheduleHeartbeat()
     }
 
-    private fun setupUI() {
-        // 상단 상태 표시
-        binding.tvStatus.text = "시작 중..."
-        binding.tvServiceStatus.text = "서비스: 대기"
+    private fun setIndicatorColor(color: Int) {
+        val drawable = GradientDrawable()
+        drawable.shape = GradientDrawable.OVAL
+        drawable.setColor(color)
+        binding.viewIndicator.background = drawable
+    }
 
-        // 수동 제어 버튼 (비상용)
-        binding.btnForceRestart.setOnClickListener {
-            autoStartSequence()
-        }
-
-        binding.btnStopService.setOnClickListener {
-            stopFileObserverService()
+    // ===== Battery Optimization Exemption =====
+    private fun requestBatteryOptimizationExemption() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            Log.d(TAG, "Requesting battery optimization exemption")
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to request battery exemption: ${e.message}")
+            }
+        } else {
+            Log.d(TAG, "Battery optimization already exempted")
         }
     }
 
+    // ===== Heartbeat (WorkManager) =====
+    private fun scheduleHeartbeat() {
+        val heartbeatWork = PeriodicWorkRequestBuilder<HeartbeatWorker>(
+            1, TimeUnit.HOURS
+        ).build()
+
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            HeartbeatWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            heartbeatWork
+        )
+        Log.d(TAG, "Heartbeat scheduled (1 hour interval)")
+    }
+
+    // ===== Permissions =====
     private fun checkAndRequestPermissions() {
         val permissionsToRequest = requiredPermissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -66,14 +117,12 @@ class MainActivity : AppCompatActivity() {
                 PERMISSION_REQUEST_CODE
             )
         } else {
-            // 모든 권한 이미 허용됨 -> 자동 시작
             checkStorageAndStart()
         }
 
-        // Android 11+ 파일 접근 권한
+        // Android 11+ all-files access
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
-                binding.tvStatus.text = "파일 접근 권한 필요"
                 try {
                     val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                     intent.data = Uri.parse("package:$packageName")
@@ -93,69 +142,59 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (storageOk) {
-            autoStartSequence()
+            startMonitoring()
         } else {
             binding.tvStatus.text = "파일 권한 허용 후 앱을 다시 열어주세요"
+            setIndicatorColor(COLOR_RED)
         }
     }
 
-    private fun autoStartSequence() {
-        binding.tvStatus.text = "서버 연결 중..."
-        Log.d(TAG, "Auto-start sequence initiated")
-        Log.d(TAG, "Target server: ${NetworkModule.BASE_URL}")
+    // ===== Monitoring =====
+    private fun startMonitoring() {
+        if (isMonitoring) return
+        isMonitoring = true
 
+        Log.d(TAG, "Starting monitoring - server: ${NetworkModule.BASE_URL}")
+
+        // Start FileObserver service immediately
+        startFileObserverService()
+
+        // Periodic health check loop
         lifecycleScope.launch {
-            // Step 1: 서버 연결 확인 (최대 3회 재시도)
-            var connected = false
-            for (attempt in 1..3) {
-                try {
-                    val url = "${NetworkModule.BASE_URL}health"
-                    Log.d(TAG, "Connection attempt $attempt/3 -> $url")
-                    val response = NetworkModule.api.healthCheck()
-
-                    if (response.isSuccessful) {
-                        connected = true
-                        val body = response.body()
-                        Log.d(TAG, "Server connected! status=${body?.status}, timestamp=${body?.timestamp}")
-                        break
-                    } else {
-                        val errorBody = response.errorBody()?.string() ?: "no body"
-                        Log.e(TAG, "Attempt $attempt failed: HTTP ${response.code()} ${response.message()} | body=$errorBody")
-                    }
-                } catch (e: java.net.UnknownHostException) {
-                    Log.e(TAG, "Attempt $attempt: DNS resolution failed for ${NetworkModule.BASE_URL} - ${e.message}")
-                } catch (e: java.net.ConnectException) {
-                    Log.e(TAG, "Attempt $attempt: Connection refused - ${e.message}")
-                } catch (e: javax.net.ssl.SSLException) {
-                    Log.e(TAG, "Attempt $attempt: SSL error - ${e.message}", e)
-                } catch (e: java.net.SocketTimeoutException) {
-                    Log.e(TAG, "Attempt $attempt: Timeout after 30s - ${e.message}")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Attempt $attempt: ${e.javaClass.simpleName} - ${e.message}", e)
-                }
-
-                if (attempt < 3) {
-                    Log.d(TAG, "Retrying in 3 seconds...")
-                    delay(3000)
-                }
+            while (isActive) {
+                val connected = checkServerHealth()
+                updateUI(connected)
+                delay(30_000)
             }
+        }
+    }
 
-            if (connected) {
-                // Step 2: 서버 연결 성공 -> 서비스 자동 시작
-                binding.tvStatus.text = "서버 연결됨 (${NetworkModule.BASE_URL})"
-                startFileObserverService()
-                binding.tvServiceStatus.text = "감시 중"
-                binding.tvIndicator.text = "●"
-                binding.tvIndicator.setTextColor(getColor(android.R.color.holo_green_dark))
-                Log.d(TAG, "Auto-start complete - service running")
+    private suspend fun checkServerHealth(): Boolean {
+        return try {
+            val response = NetworkModule.api.healthCheck()
+            if (response.isSuccessful) {
+                Log.d(TAG, "Health OK: ${response.body()?.status}")
+                true
             } else {
-                // 연결 실패
-                binding.tvStatus.text = "서버 연결 실패 - 재시도 버튼을 누르세요"
-                binding.tvServiceStatus.text = "중지됨"
-                binding.tvIndicator.text = "●"
-                binding.tvIndicator.setTextColor(getColor(android.R.color.holo_red_dark))
-                Log.e(TAG, "FAILED to connect after 3 attempts to ${NetworkModule.BASE_URL}")
+                Log.e(TAG, "Health failed: HTTP ${response.code()}")
+                false
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Health error: ${e.javaClass.simpleName} - ${e.message}")
+            false
+        }
+    }
+
+    private fun updateUI(connected: Boolean) {
+        val userName = UserPreferences.getUserName(this)
+        if (connected) {
+            setIndicatorColor(COLOR_GREEN)
+            binding.tvStatus.text = "정상 작동 중"
+            binding.tvSubStatus.text = "${userName}님, 정상 작동 중"
+        } else {
+            setIndicatorColor(COLOR_RED)
+            binding.tvStatus.text = "연결이 안 되어 있습니다"
+            binding.tvSubStatus.text = "관리자에게 문의하세요"
         }
     }
 
@@ -166,15 +205,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             startService(intent)
         }
-    }
-
-    private fun stopFileObserverService() {
-        val intent = Intent(this, FileObserverService::class.java)
-        stopService(intent)
-        binding.tvStatus.text = "수동 중지됨"
-        binding.tvServiceStatus.text = "중지됨"
-        binding.tvIndicator.text = "●"
-        binding.tvIndicator.setTextColor(getColor(android.R.color.holo_red_dark))
+        Log.d(TAG, "FileObserverService started")
     }
 
     override fun onRequestPermissionsResult(
@@ -189,20 +220,31 @@ class MainActivity : AppCompatActivity() {
                 checkStorageAndStart()
             } else {
                 binding.tvStatus.text = "권한을 허용해주세요"
+                setIndicatorColor(COLOR_RED)
+                binding.tvSubStatus.text = "설정에서 권한을 허용한 후 다시 열어주세요"
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // 파일 권한 설정에서 돌아올 때 자동 재시도
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+        // Retry after returning from storage/battery permission settings
+        if (!isMonitoring &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()
+        ) {
             val allGranted = requiredPermissions.all {
                 ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
             }
             if (allGranted) {
-                autoStartSequence()
+                startMonitoring()
             }
         }
+    }
+
+    companion object {
+        private val COLOR_GREEN = Color.parseColor("#4CAF50")
+        private val COLOR_RED = Color.parseColor("#F44336")
+        private val COLOR_GRAY = Color.parseColor("#CCCCCC")
     }
 }

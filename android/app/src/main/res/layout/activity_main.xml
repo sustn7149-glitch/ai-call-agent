@@ -5,83 +5,44 @@
     android:orientation="vertical"
     android:gravity="center"
     android:padding="32dp"
-    android:background="#FAFAFA">
+    android:background="#FFFFFF">
 
     <!-- App Title -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="AI Call Agent"
-        android:textSize="28sp"
+        android:text="통화 관리 프로그램"
+        android:textSize="24sp"
         android:textStyle="bold"
         android:textColor="#333333"
-        android:layout_marginBottom="48dp" />
+        android:layout_marginBottom="64dp" />
 
-    <!-- Live Indicator (green/red dot) -->
-    <TextView
-        android:id="@+id/tvIndicator"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="●"
-        android:textSize="64sp"
-        android:textColor="@android:color/darker_gray"
-        android:layout_marginBottom="16dp" />
+    <!-- Status Indicator Circle -->
+    <View
+        android:id="@+id/viewIndicator"
+        android:layout_width="140dp"
+        android:layout_height="140dp"
+        android:layout_marginBottom="32dp" />
 
-    <!-- Status Text -->
+    <!-- Main Status Text -->
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="시작 중..."
+        android:text="연결 확인 중..."
         android:textSize="18sp"
-        android:textColor="#555555"
-        android:layout_marginBottom="8dp" />
+        android:textColor="#333333"
+        android:gravity="center" />
 
-    <!-- Service Status -->
+    <!-- Sub Status Text -->
     <TextView
-        android:id="@+id/tvServiceStatus"
+        android:id="@+id/tvSubStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="서비스: 대기"
-        android:textSize="14sp"
+        android:text=""
+        android:textSize="13sp"
         android:textColor="#999999"
-        android:layout_marginBottom="48dp" />
-
-    <!-- Emergency Controls (small, bottom) -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center">
-
-        <Button
-            android:id="@+id/btnForceRestart"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:text="재연결"
-            android:textSize="12sp"
-            android:layout_marginEnd="8dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
-
-        <Button
-            android:id="@+id/btnStopService"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:text="중지"
-            android:textSize="12sp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
-
-    </LinearLayout>
-
-    <!-- Server Info -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="v2.0"
-        android:textSize="10sp"
-        android:textColor="#CCCCCC"
-        android:layout_marginTop="32dp" />
+        android:gravity="center"
+        android:layout_marginTop="8dp" />
 
 </LinearLayout>
