@@ -57,7 +57,10 @@ interface ApiService {
         @Part file: MultipartBody.Part,
         @Part("phoneNumber") phoneNumber: RequestBody,
         @Part("userName") userName: RequestBody,
-        @Part("userPhone") userPhone: RequestBody
+        @Part("userPhone") userPhone: RequestBody,
+        @Part("callType") callType: RequestBody,
+        @Part("duration") duration: RequestBody,
+        @Part("contactName") contactName: RequestBody
     ): Response<UploadResponse>
 
     @POST("api/heartbeat")

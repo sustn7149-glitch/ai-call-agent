@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private val requiredPermissions = mutableListOf(
         Manifest.permission.READ_PHONE_STATE,
         Manifest.permission.READ_CALL_LOG,
+        Manifest.permission.READ_CONTACTS,
         Manifest.permission.POST_NOTIFICATIONS
     ).apply {
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {

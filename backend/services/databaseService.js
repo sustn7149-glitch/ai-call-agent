@@ -6,7 +6,6 @@ const dbPath = process.env.DB_PATH || path.join(__dirname, "../../database.sqlit
 
 let db = null;
 
-// 데이터베이스를 파일로 저장
 const saveDatabase = () => {
   if (db) {
     const data = db.export();
@@ -15,31 +14,27 @@ const saveDatabase = () => {
   }
 };
 
-// 컬럼 존재 여부 확인 후 추가
 const addColumnIfNotExists = (table, column, type) => {
   try {
     db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-    console.log(`✅ Column added: ${table}.${column}`);
+    console.log(`Column added: ${table}.${column}`);
   } catch (e) {
     // Column already exists - ignore
   }
 };
 
-// 데이터베이스 초기화 (비동기)
 const initDB = async () => {
   const SQL = await initSqlJs();
 
-  // 기존 DB 파일이 있으면 로드, 없으면 새로 생성
   if (fs.existsSync(dbPath)) {
     const fileBuffer = fs.readFileSync(dbPath);
     db = new SQL.Database(fileBuffer);
-    console.log("✅ Database loaded from file");
+    console.log("Database loaded from file");
   } else {
     db = new SQL.Database();
-    console.log("✅ New database created");
+    console.log("New database created");
   }
 
-  // 테이블 생성
   db.run(`
     CREATE TABLE IF NOT EXISTS calls (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +49,6 @@ const initDB = async () => {
     )
   `);
 
-  // AI 분석 결과 테이블 생성
   db.run(`
     CREATE TABLE IF NOT EXISTS analysis_results (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,19 +63,38 @@ const initDB = async () => {
     )
   `);
 
-  // 업로더 정보 컬럼 추가 (기존 DB 마이그레이션)
+  // Migration: add new columns
   addColumnIfNotExists('calls', 'uploader_name', 'TEXT');
   addColumnIfNotExists('calls', 'uploader_phone', 'TEXT');
+  addColumnIfNotExists('calls', 'customer_name', 'TEXT');
+  addColumnIfNotExists('calls', 'ai_emotion', 'TEXT');
+  addColumnIfNotExists('calls', 'ai_score', 'REAL');
+  addColumnIfNotExists('calls', 'ai_summary', 'TEXT');
+  addColumnIfNotExists('calls', 'ai_status', "TEXT DEFAULT 'pending'");
 
   saveDatabase();
-  console.log("✅ Database initialized");
+  console.log("Database initialized");
 };
 
-// 초기화 Promise
 const dbReady = initDB();
 
+// Helper: convert row arrays to objects
+const rowsToObjects = (result) => {
+  if (!result[0]) return [];
+  const columns = result[0].columns;
+  return result[0].values.map(values => {
+    const row = {};
+    columns.forEach((col, idx) => {
+      row[col] = values[idx];
+    });
+    if (row.checklist) {
+      try { row.checklist = JSON.parse(row.checklist); } catch (e) { row.checklist = null; }
+    }
+    return row;
+  });
+};
+
 module.exports = {
-  // DB 준비 완료 대기용
   ready: () => dbReady,
 
   saveCallEvent: (data) => {
@@ -89,7 +102,7 @@ module.exports = {
 
     db.run(
       `INSERT INTO calls (phone_number, status, direction) VALUES (?, ?, ?)`,
-      [data.number || 'UNKNOWN', data.status, data.direction || 'IN']
+      [data.number || '', data.status, data.direction || 'IN']
     );
     saveDatabase();
 
@@ -97,36 +110,69 @@ module.exports = {
     return { lastInsertRowid: result[0]?.values[0]?.[0] };
   },
 
-  updateRecording: (phoneNumber, filePath, uploaderName, uploaderPhone) => {
+  // Save upload with full metadata from Android app
+  saveUploadRecord: (data) => {
     if (!db) throw new Error("Database not initialized");
+
+    const {
+      phoneNumber, filePath, uploaderName, uploaderPhone,
+      callType, duration, contactName
+    } = data;
+
+    // Map callType to direction
+    const direction = callType === 'OUTGOING' ? 'OUT' : 'IN';
+
+    db.run(
+      `INSERT INTO calls (phone_number, status, recording_path, direction, duration,
+        uploader_name, uploader_phone, customer_name, ai_status)
+       VALUES (?, 'COMPLETED', ?, ?, ?, ?, ?, ?, 'pending')`,
+      [
+        phoneNumber || '',
+        filePath,
+        direction,
+        parseInt(duration) || 0,
+        uploaderName || null,
+        uploaderPhone || null,
+        contactName || null
+      ]
+    );
+    saveDatabase();
+
+    const result = db.exec("SELECT last_insert_rowid() as id");
+    return { lastInsertRowid: result[0]?.values[0]?.[0] };
+  },
+
+  // Update existing call record with recording + metadata
+  updateRecording: (data) => {
+    if (!db) throw new Error("Database not initialized");
+
+    const {
+      phoneNumber, filePath, uploaderName, uploaderPhone,
+      callType, duration, contactName
+    } = data;
+
+    const direction = callType === 'OUTGOING' ? 'OUT' : 'IN';
 
     db.run(
       `UPDATE calls SET recording_path = ?, status = 'COMPLETED',
-              uploader_name = ?, uploader_phone = ?
+        uploader_name = ?, uploader_phone = ?,
+        direction = ?, duration = ?, customer_name = ?, ai_status = 'pending'
        WHERE id = (SELECT id FROM calls WHERE phone_number = ? ORDER BY id DESC LIMIT 1)`,
-      [filePath, uploaderName || null, uploaderPhone || null, phoneNumber]
+      [
+        filePath,
+        uploaderName || null,
+        uploaderPhone || null,
+        direction,
+        parseInt(duration) || 0,
+        contactName || null,
+        phoneNumber
+      ]
     );
     saveDatabase();
 
     return { changes: db.getRowsModified() };
   },
 
-  // 업로드로 새 레코드 생성 (매칭 통화 없을 때)
-  saveUploadRecord: (phoneNumber, filePath, uploaderName, uploaderPhone) => {
-    if (!db) throw new Error("Database not initialized");
-
-    db.run(
-      `INSERT INTO calls (phone_number, status, recording_path, uploader_name, uploader_phone)
-       VALUES (?, 'COMPLETED', ?, ?, ?)`,
-      [phoneNumber || 'UNKNOWN', filePath, uploaderName || null, uploaderPhone || null]
-    );
-    saveDatabase();
-
-    const result = db.exec("SELECT last_insert_rowid() as id");
-    return { lastInsertRowid: result[0]?.values[0]?.[0] };
-  },
-
-  // 전체 통화 조회 (테스트용)
   getAllCalls: () => {
     if (!db) return [];
     const result = db.exec("SELECT * FROM calls ORDER BY id DESC");
@@ -140,6 +186,7 @@ module.exports = {
         c.id, c.call_id, c.phone_number, c.direction, c.status,
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
         c.uploader_name, c.uploader_phone,
+        c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
         a.transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
@@ -147,26 +194,14 @@ module.exports = {
        ORDER BY c.created_at DESC`
     );
 
-    if (!result[0]) return [];
-
-    const columns = result[0].columns;
-    return result[0].values.map(values => {
-      const row = {};
-      columns.forEach((col, idx) => {
-        row[col] = values[idx];
-      });
-      if (row.checklist) {
-        try { row.checklist = JSON.parse(row.checklist); } catch (e) { row.checklist = null; }
-      }
-      return row;
-    });
+    return rowsToObjects(result);
   },
 
-  // AI 분석 결과 저장
+  // Save AI analysis results + update calls table
   saveAnalysisResult: (callId, results) => {
     if (!db) throw new Error("Database not initialized");
 
-    // 분석 결과 저장
+    // Save to analysis_results table
     db.run(
       `INSERT INTO analysis_results (call_id, transcript, summary, sentiment, sentiment_score, checklist)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -180,11 +215,31 @@ module.exports = {
       ]
     );
 
-    // 통화 기록의 ai_analyzed 플래그 업데이트
+    // Update calls table with AI results
     db.run(
-      `UPDATE calls SET ai_analyzed = 1 WHERE id = ?`,
-      [callId]
+      `UPDATE calls SET
+        ai_analyzed = 1,
+        ai_emotion = ?,
+        ai_score = ?,
+        ai_summary = ?,
+        ai_status = 'completed'
+       WHERE id = ?`,
+      [
+        results.sentiment || '',
+        results.ai_score || null,
+        results.summary || '',
+        callId
+      ]
     );
+
+    // Update customer_name from AI extraction only if not already set
+    if (results.customer_name) {
+      db.run(
+        `UPDATE calls SET customer_name = ?
+         WHERE id = ? AND (customer_name IS NULL OR customer_name = '')`,
+        [results.customer_name, callId]
+      );
+    }
 
     saveDatabase();
 
@@ -192,7 +247,13 @@ module.exports = {
     return { lastInsertRowid: result[0]?.values[0]?.[0] };
   },
 
-  // 특정 통화의 분석 결과 조회 (통화 정보 + 분석 결과 조인)
+  // Update ai_status for a call (e.g. 'processing', 'failed')
+  updateAiStatus: (callId, status) => {
+    if (!db) return;
+    db.run(`UPDATE calls SET ai_status = ? WHERE id = ?`, [status, callId]);
+    saveDatabase();
+  },
+
   getCallWithAnalysis: (callId) => {
     if (!db) return null;
 
@@ -201,6 +262,7 @@ module.exports = {
         c.id, c.call_id, c.phone_number, c.direction, c.status,
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
         c.uploader_name, c.uploader_phone,
+        c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
         a.transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
@@ -218,19 +280,13 @@ module.exports = {
       row[col] = values[idx];
     });
 
-    // checklist JSON 파싱
     if (row.checklist) {
-      try {
-        row.checklist = JSON.parse(row.checklist);
-      } catch (e) {
-        row.checklist = null;
-      }
+      try { row.checklist = JSON.parse(row.checklist); } catch (e) { row.checklist = null; }
     }
 
     return row;
   },
 
-  // 특정 통화의 분석 결과만 조회
   getAnalysisByCallId: (callId) => {
     if (!db) return null;
 
@@ -248,19 +304,13 @@ module.exports = {
       row[col] = values[idx];
     });
 
-    // checklist JSON 파싱
     if (row.checklist) {
-      try {
-        row.checklist = JSON.parse(row.checklist);
-      } catch (e) {
-        row.checklist = null;
-      }
+      try { row.checklist = JSON.parse(row.checklist); } catch (e) { row.checklist = null; }
     }
 
     return row;
   },
 
-  // AI 분석 대기 중인 통화 목록 조회
   getPendingAnalysisCalls: () => {
     if (!db) return [];
 
@@ -270,15 +320,64 @@ module.exports = {
        ORDER BY created_at ASC`
     );
 
-    if (!result[0]) return [];
+    return rowsToObjects(result);
+  },
 
-    const columns = result[0].columns;
-    return result[0].values.map(values => {
-      const row = {};
-      columns.forEach((col, idx) => {
-        row[col] = values[idx];
-      });
-      return row;
-    });
+  // Dashboard statistics
+  getTodayStats: () => {
+    if (!db) return { todayTotal: 0, avgDuration: 0, missedCount: 0, incomingCount: 0, outgoingCount: 0 };
+
+    const today = new Date().toISOString().split('T')[0];
+
+    const totalResult = db.exec(
+      `SELECT COUNT(*) FROM calls WHERE date(created_at) = date(?)`, [today]
+    );
+    const todayTotal = totalResult[0]?.values[0]?.[0] || 0;
+
+    const avgResult = db.exec(
+      `SELECT AVG(duration) FROM calls WHERE date(created_at) = date(?) AND duration > 0`, [today]
+    );
+    const avgDuration = Math.round(avgResult[0]?.values[0]?.[0] || 0);
+
+    const missedResult = db.exec(
+      `SELECT COUNT(*) FROM calls WHERE date(created_at) = date(?) AND direction = 'IN' AND (duration = 0 OR duration IS NULL)`, [today]
+    );
+    const missedCount = missedResult[0]?.values[0]?.[0] || 0;
+
+    const inResult = db.exec(
+      `SELECT COUNT(*) FROM calls WHERE date(created_at) = date(?) AND direction = 'IN'`, [today]
+    );
+    const incomingCount = inResult[0]?.values[0]?.[0] || 0;
+
+    const outResult = db.exec(
+      `SELECT COUNT(*) FROM calls WHERE date(created_at) = date(?) AND direction = 'OUT'`, [today]
+    );
+    const outgoingCount = outResult[0]?.values[0]?.[0] || 0;
+
+    return { todayTotal, avgDuration, missedCount, incomingCount, outgoingCount };
+  },
+
+  // Agent (uploader) stats for today
+  getAgentStats: () => {
+    if (!db) return [];
+
+    const today = new Date().toISOString().split('T')[0];
+
+    const result = db.exec(
+      `SELECT
+        uploader_name,
+        uploader_phone,
+        COUNT(*) as total_calls,
+        AVG(duration) as avg_duration,
+        AVG(ai_score) as avg_score,
+        MAX(created_at) as last_activity
+       FROM calls
+       WHERE date(created_at) = date(?) AND uploader_name IS NOT NULL
+       GROUP BY uploader_phone
+       ORDER BY total_calls DESC`,
+      [today]
+    );
+
+    return rowsToObjects(result);
   }
 };

@@ -84,9 +84,9 @@ class FileObserverService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("통화 감시 활성")
-            .setContentText("백그라운드 실행 중")
-            .setSmallIcon(android.R.drawable.ic_lock_silent_mode)
+            .setContentTitle("통화 관리 프로그램")
+            .setContentText("실시간 감시가 정상 작동 중입니다")
+            .setSmallIcon(R.drawable.ic_stat_call_service)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
