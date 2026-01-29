@@ -30,7 +30,8 @@ data class CallEventResponse(
 
 data class UploadResponse(
     val success: Boolean,
-    val filename: String?
+    val filename: String?,
+    val duplicate: Boolean? = null
 )
 
 data class HeartbeatRequest(
@@ -60,7 +61,8 @@ interface ApiService {
         @Part("userPhone") userPhone: RequestBody,
         @Part("callType") callType: RequestBody,
         @Part("duration") duration: RequestBody,
-        @Part("contactName") contactName: RequestBody
+        @Part("contactName") contactName: RequestBody,
+        @Part("startTime") startTime: RequestBody
     ): Response<UploadResponse>
 
     @POST("api/heartbeat")

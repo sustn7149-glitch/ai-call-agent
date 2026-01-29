@@ -71,6 +71,26 @@ const initDB = async () => {
   addColumnIfNotExists('calls', 'ai_score', 'REAL');
   addColumnIfNotExists('calls', 'ai_summary', 'TEXT');
   addColumnIfNotExists('calls', 'ai_status', "TEXT DEFAULT 'pending'");
+  addColumnIfNotExists('calls', 'team_name', 'TEXT');
+  addColumnIfNotExists('calls', 'start_time', 'TEXT');
+
+  // Unique index to prevent duplicate uploads (same uploader + same call start time)
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_dedup ON calls(uploader_phone, start_time) WHERE uploader_phone IS NOT NULL AND start_time IS NOT NULL`);
+    console.log("Dedup index ensured: idx_calls_dedup");
+  } catch (e) {
+    // Index may already exist
+  }
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS agents (
+      phone_number TEXT PRIMARY KEY,
+      name TEXT,
+      team_name TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
   saveDatabase();
   console.log("Database initialized");
@@ -110,13 +130,23 @@ module.exports = {
     return { lastInsertRowid: result[0]?.values[0]?.[0] };
   },
 
+  // Check if a duplicate record exists (same uploader_phone + start_time)
+  checkDuplicate: (uploaderPhone, startTime) => {
+    if (!db || !uploaderPhone || !startTime) return false;
+    const result = db.exec(
+      `SELECT id FROM calls WHERE uploader_phone = ? AND start_time = ? LIMIT 1`,
+      [uploaderPhone, startTime]
+    );
+    return result[0]?.values?.length > 0;
+  },
+
   // Save upload with full metadata from Android app
   saveUploadRecord: (data) => {
     if (!db) throw new Error("Database not initialized");
 
     const {
       phoneNumber, filePath, uploaderName, uploaderPhone,
-      callType, duration, contactName
+      callType, duration, contactName, teamName, startTime
     } = data;
 
     // Map callType to direction
@@ -124,8 +154,8 @@ module.exports = {
 
     db.run(
       `INSERT INTO calls (phone_number, status, recording_path, direction, duration,
-        uploader_name, uploader_phone, customer_name, ai_status)
-       VALUES (?, 'COMPLETED', ?, ?, ?, ?, ?, ?, 'pending')`,
+        uploader_name, uploader_phone, customer_name, team_name, ai_status, start_time)
+       VALUES (?, 'COMPLETED', ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
       [
         phoneNumber || '',
         filePath,
@@ -133,7 +163,9 @@ module.exports = {
         parseInt(duration) || 0,
         uploaderName || null,
         uploaderPhone || null,
-        contactName || null
+        contactName || null,
+        teamName || null,
+        startTime || null
       ]
     );
     saveDatabase();
@@ -148,7 +180,7 @@ module.exports = {
 
     const {
       phoneNumber, filePath, uploaderName, uploaderPhone,
-      callType, duration, contactName
+      callType, duration, contactName, teamName, startTime
     } = data;
 
     const direction = callType === 'OUTGOING' ? 'OUT' : 'IN';
@@ -156,7 +188,8 @@ module.exports = {
     db.run(
       `UPDATE calls SET recording_path = ?, status = 'COMPLETED',
         uploader_name = ?, uploader_phone = ?,
-        direction = ?, duration = ?, customer_name = ?, ai_status = 'pending'
+        direction = ?, duration = ?, customer_name = ?, team_name = ?,
+        start_time = ?, ai_status = 'pending'
        WHERE id = (SELECT id FROM calls WHERE phone_number = ? ORDER BY id DESC LIMIT 1)`,
       [
         filePath,
@@ -165,6 +198,8 @@ module.exports = {
         direction,
         parseInt(duration) || 0,
         contactName || null,
+        teamName || null,
+        startTime || null,
         phoneNumber
       ]
     );
@@ -187,6 +222,7 @@ module.exports = {
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
         c.uploader_name, c.uploader_phone,
         c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
+        c.team_name, c.start_time,
         a.transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
@@ -263,6 +299,7 @@ module.exports = {
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
         c.uploader_name, c.uploader_phone,
         c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
+        c.team_name, c.start_time,
         a.transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
@@ -378,6 +415,85 @@ module.exports = {
       [today]
     );
 
+    return rowsToObjects(result);
+  },
+
+  // ========== Agents CRUD ==========
+  getAllAgents: () => {
+    if (!db) return [];
+    const result = db.exec("SELECT * FROM agents ORDER BY created_at DESC");
+    return rowsToObjects(result);
+  },
+
+  upsertAgent: (data) => {
+    if (!db) throw new Error("Database not initialized");
+    const { phone_number, name, team_name } = data;
+    db.run(
+      `INSERT INTO agents (phone_number, name, team_name)
+       VALUES (?, ?, ?)
+       ON CONFLICT(phone_number) DO UPDATE SET
+         name = excluded.name,
+         team_name = excluded.team_name,
+         updated_at = CURRENT_TIMESTAMP`,
+      [phone_number, name || null, team_name || null]
+    );
+    saveDatabase();
+    return { phone_number };
+  },
+
+  updateAgent: (phone, data) => {
+    if (!db) throw new Error("Database not initialized");
+    const { name, team_name } = data;
+    db.run(
+      `UPDATE agents SET name = ?, team_name = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE phone_number = ?`,
+      [name || null, team_name || null, phone]
+    );
+    saveDatabase();
+    return { changes: db.getRowsModified() };
+  },
+
+  getAgentTeam: (phone) => {
+    if (!db) return null;
+    const result = db.exec(
+      `SELECT team_name FROM agents WHERE phone_number = ?`,
+      [phone]
+    );
+    if (!result[0] || !result[0].values.length) return null;
+    return result[0].values[0][0];
+  },
+
+  // ========== Analytics ==========
+  getDailyAnalytics: () => {
+    if (!db) return [];
+    const result = db.exec(
+      `SELECT date(created_at) as date, COUNT(*) as count
+       FROM calls
+       WHERE created_at >= date('now', '-6 days')
+       GROUP BY date(created_at)
+       ORDER BY date ASC`
+    );
+    return rowsToObjects(result);
+  },
+
+  getTeamAnalytics: () => {
+    if (!db) return [];
+    const result = db.exec(
+      `SELECT COALESCE(team_name, '미지정') as team, COUNT(*) as count
+       FROM calls
+       GROUP BY team_name
+       ORDER BY count DESC`
+    );
+    return rowsToObjects(result);
+  },
+
+  getDirectionAnalytics: () => {
+    if (!db) return [];
+    const result = db.exec(
+      `SELECT direction, COUNT(*) as count
+       FROM calls
+       GROUP BY direction`
+    );
     return rowsToObjects(result);
   }
 };

@@ -3,6 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const Redis = require('ioredis');
+const fs = require('fs');
 
 const queueService = require('./services/queueService');
 const upload = require('./services/uploadService');
@@ -49,8 +50,19 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file' });
 
     const file = req.file;
-    const { phoneNumber, userName, userPhone, callType, duration, contactName } = req.body;
-    console.log(`Uploaded: ${file.filename} | type=${callType} | dur=${duration}s | contact=${contactName || 'N/A'} | by ${userName || 'N/A'}`);
+    const { phoneNumber, userName, userPhone, callType, duration, contactName, startTime } = req.body;
+    console.log(`Uploaded: ${file.filename} | type=${callType} | dur=${duration}s | start=${startTime || 'N/A'} | contact=${contactName || 'N/A'} | by ${userName || 'N/A'}`);
+
+    // Duplicate check: same uploader + same call start time = same call
+    if (userPhone && startTime && db.checkDuplicate(userPhone, startTime)) {
+      console.log(`[Duplicate] Skipped: uploader=${userPhone}, startTime=${startTime}`);
+      // Remove the uploaded file since it's a duplicate
+      try { fs.unlinkSync(file.path); } catch (e) { /* ignore */ }
+      return res.json({ success: true, duplicate: true, filename: file.filename });
+    }
+
+    // Auto-match team from agents table
+    const teamName = userPhone ? db.getAgentTeam(userPhone) : null;
 
     const uploadData = {
       phoneNumber: phoneNumber || '',
@@ -59,7 +71,9 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       uploaderPhone: userPhone,
       callType: callType || 'INCOMING',
       duration: duration || 0,
-      contactName: contactName || null
+      contactName: contactName || null,
+      teamName: teamName || null,
+      startTime: startTime || null
     };
 
     // Try to match existing call record, else create new
@@ -141,7 +155,7 @@ app.get('/api/stats', (req, res) => {
   }
 });
 
-// Online agents from Redis
+// Online agents from Redis + agents table join
 app.get('/api/online-agents', async (req, res) => {
   try {
     const keys = await redis.keys('online_status:*');
@@ -149,10 +163,72 @@ app.get('/api/online-agents', async (req, res) => {
     for (const key of keys) {
       const data = await redis.get(key);
       if (data) {
-        agents.push(JSON.parse(data));
+        const agent = JSON.parse(data);
+        const teamName = db.getAgentTeam(agent.userPhone);
+        agent.teamName = teamName || null;
+        agents.push(agent);
       }
     }
     res.json(agents);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Agents CRUD
+app.get('/api/agents', (req, res) => {
+  try {
+    res.json(db.getAllAgents());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/agents', (req, res) => {
+  try {
+    const result = db.upsertAgent(req.body);
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/agents/:phone', (req, res) => {
+  try {
+    const result = db.updateAgent(req.params.phone, req.body);
+    if (result.changes === 0) return res.status(404).json({ error: 'Agent not found' });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Analytics
+app.get('/api/analytics/daily', (req, res) => {
+  try {
+    res.json(db.getDailyAnalytics());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/team', (req, res) => {
+  try {
+    res.json(db.getTeamAnalytics());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/direction', (req, res) => {
+  try {
+    res.json(db.getDirectionAnalytics());
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
