@@ -31,6 +31,10 @@ const QUICK_RANGES = [
   }},
 ]
 
+const TH = 'border border-gray-300 text-[12px] font-bold text-center text-gray-700 px-2 whitespace-nowrap'
+const TD = 'border border-gray-300 text-[12px] text-center text-gray-700 px-2 whitespace-nowrap'
+const TH_STYLE = { background: '#ECEBFF', height: '26px', position: 'sticky', top: 0, zIndex: 10 }
+
 export default function Reports() {
   const [startDate, setStartDate] = useState(() => toDateStr(today()))
   const [endDate, setEndDate] = useState(() => toDateStr(today()))
@@ -69,7 +73,7 @@ export default function Reports() {
     setSelectedTeam(prev => (prev === teamName ? null : teamName))
   }
 
-  // Sort agents (type-safe: string keys use '' fallback, numeric keys use -Infinity)
+  // Sort agents
   const sortedAgents = useMemo(() => {
     const stringKeys = new Set(['uploader_name', 'team_name'])
     const list = [...data.agents]
@@ -94,6 +98,11 @@ export default function Reports() {
     }
   }
 
+  const sortArrow = (key) => {
+    if (sortKey !== key) return <span className="text-[9px] text-gray-400 ml-0.5">{'\u25BC'}</span>
+    return <span className="text-[9px] text-blue-600 ml-0.5">{sortAsc ? '\u25B2' : '\u25BC'}</span>
+  }
+
   const { teams, globalStats } = data
 
   const globalTeam = globalStats?.total_calls != null
@@ -109,217 +118,187 @@ export default function Reports() {
       }
     : null
 
-  return (
-    <div className="px-4 py-3 space-y-3">
-      {/* Zone A: Date Filter */}
-      <div className="bg-surface border border-line rounded-lg px-4 py-3">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Date inputs */}
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={startDate}
-              max={endDate}
-              onChange={e => setStartDate(e.target.value)}
-              className="border border-line rounded px-2 py-1.5 text-sm text-ink bg-surface focus:border-brand focus:outline-none"
-            />
-            <span className="text-xs text-ink-tertiary">~</span>
-            <input
-              type="date"
-              value={endDate}
-              min={startDate}
-              onChange={e => setEndDate(e.target.value)}
-              className="border border-line rounded px-2 py-1.5 text-sm text-ink bg-surface focus:border-brand focus:outline-none"
-            />
-          </div>
+  const allTeamRows = [
+    ...(globalTeam ? [globalTeam] : []),
+    ...teams.map(t => ({
+      teamName: t.team_name,
+      agent_count: t.agent_count || 0,
+      total_calls: t.total_calls || 0,
+      outgoing: t.outgoing || 0,
+      incoming: t.incoming || 0,
+      missed: t.missed || 0,
+      total_duration: t.total_duration || 0,
+      avg_score: t.avg_score,
+    }))
+  ]
 
-          {/* Quick select buttons */}
-          <div className="flex gap-1.5">
-            {QUICK_RANGES.map(r => (
-              <button
-                key={r.label}
-                onClick={() => handleQuickRange(r.calc)}
-                className="px-2.5 py-1.5 text-xs rounded border border-line bg-surface-panel text-ink-secondary hover:border-brand hover:text-brand transition-colors"
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
+  const fmtScore = (s) => {
+    if (s == null || s === 0) return '-'
+    return s
+  }
 
-          {loading && (
-            <span className="text-xs text-ink-tertiary animate-pulse">불러오는 중...</span>
-          )}
-        </div>
-      </div>
-
-      {/* Zone B: Team Summary Cards */}
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {globalTeam && (
-          <ReportTeamCard
-            team={globalTeam}
-            selected={selectedTeam === null}
-            onClick={() => setSelectedTeam(null)}
-          />
-        )}
-        {teams.map(team => (
-          <ReportTeamCard
-            key={team.team_name}
-            team={{
-              teamName: team.team_name,
-              agent_count: team.agent_count || 0,
-              total_calls: team.total_calls || 0,
-              outgoing: team.outgoing || 0,
-              incoming: team.incoming || 0,
-              missed: team.missed || 0,
-              total_duration: team.total_duration || 0,
-              avg_score: team.avg_score,
-            }}
-            selected={selectedTeam === team.team_name}
-            onClick={() => handleTeamClick(team.team_name)}
-          />
-        ))}
-      </div>
-
-      {/* Zone C: Detailed Performance Table */}
-      <div className="bg-surface border border-line rounded-lg overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-line bg-surface-panel">
-                <th className="px-2 py-2 text-center text-xs font-medium text-ink-tertiary whitespace-nowrap w-[40px]">No</th>
-                <SortTh label="이름" sortKey="uploader_name" currentKey={sortKey} asc={sortAsc} onClick={handleSort} align="left" />
-                <SortTh label="팀" sortKey="team_name" currentKey={sortKey} asc={sortAsc} onClick={handleSort} align="left" />
-                <SortTh label="총 통화시간" sortKey="total_duration" currentKey={sortKey} asc={sortAsc} onClick={handleSort} />
-                <SortTh label="총 통화수" sortKey="total_calls" currentKey={sortKey} asc={sortAsc} onClick={handleSort} />
-                <SortTh label="발신" sortKey="outgoing" currentKey={sortKey} asc={sortAsc} onClick={handleSort} />
-                <SortTh label="수신" sortKey="incoming" currentKey={sortKey} asc={sortAsc} onClick={handleSort} />
-                <SortTh label="부재" sortKey="missed" currentKey={sortKey} asc={sortAsc} onClick={handleSort} />
-                <SortTh label="평균 AI점수" sortKey="avg_score" currentKey={sortKey} asc={sortAsc} onClick={handleSort} />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedAgents.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-xs text-ink-tertiary">
-                    해당 기간에 데이터가 없습니다
-                  </td>
-                </tr>
-              ) : (
-                sortedAgents.map((agent, idx) => (
-                  <ReportRow key={agent.uploader_phone} agent={agent} rowNum={idx + 1} />
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/* ─── Sortable Table Header ─── */
-function SortTh({ label, sortKey, currentKey, asc, onClick, align = 'center' }) {
-  const active = currentKey === sortKey
-  return (
-    <th
-      className={`px-2 py-2 text-xs font-medium text-ink-tertiary whitespace-nowrap cursor-pointer hover:text-ink select-none ${
-        align === 'left' ? 'text-left' : 'text-center'
-      }`}
-      onClick={() => onClick(sortKey)}
-    >
-      {label}
-      <span className={`ml-0.5 text-[9px] ${active ? 'text-brand' : 'text-ink-tertiary opacity-40'}`}>
-        {active ? (asc ? '\u25B2' : '\u25BC') : '\u25BC'}
-      </span>
-    </th>
-  )
-}
-
-/* ─── Report Team Summary Card ─── */
-function ReportTeamCard({ team, selected, onClick }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`shrink-0 min-w-[180px] rounded-lg border px-3 py-2.5 text-left transition-all ${
-        selected
-          ? 'border-brand bg-brand-light ring-1 ring-brand/30'
-          : 'border-line bg-surface hover:border-ink-tertiary'
-      }`}
-    >
-      <div className="flex items-center justify-between mb-1">
-        <span className={`text-sm font-semibold ${selected ? 'text-brand' : 'text-ink'}`}>
-          {team.teamName}
-        </span>
-        <span className="text-xs text-ink-tertiary">{team.agent_count}명</span>
-      </div>
-      <div className="flex gap-2 text-xs text-ink-secondary">
-        <span>총 <strong className="text-ink">{team.total_calls}</strong></span>
-        <span>발신 {team.outgoing}</span>
-        <span>수신 {team.incoming}</span>
-        <span className={team.missed > 0 ? 'text-negative' : ''}>부재 {team.missed}</span>
-      </div>
-      <div className="flex items-center gap-3 text-xs text-ink-tertiary mt-0.5">
-        <span>통화시간 {formatDurationCompact(team.total_duration)}</span>
-        {team.avg_score != null && (
-          <span>
-            AI점수{' '}
-            <strong className={
-              team.avg_score >= 7 ? 'text-positive' :
-              team.avg_score <= 3 ? 'text-negative' : 'text-ink'
-            }>
-              {team.avg_score}
-            </strong>
-          </span>
-        )}
-      </div>
-    </button>
-  )
-}
-
-/* ─── Report Table Row ─── */
-function ReportRow({ agent, rowNum }) {
-  const score = agent.avg_score
-  let scoreColor = 'text-ink-secondary'
-  if (score != null) {
-    if (score >= 7) scoreColor = 'text-positive'
-    else if (score <= 3) scoreColor = 'text-negative'
+  const scoreColor = (s) => {
+    if (s == null || s === 0) return 'text-gray-400'
+    if (s >= 7) return 'text-blue-700 font-bold'
+    if (s >= 4) return 'text-gray-700'
+    return 'text-red-600 font-bold'
   }
 
   return (
-    <tr className="border-b border-line-light last:border-b-0 hover:bg-surface-panel transition-colors">
-      <td className="px-2 py-1.5 text-center">
-        <span className="text-xs text-ink-tertiary">{rowNum}</span>
-      </td>
-      <td className="px-2 py-1.5">
-        <span className="text-xs font-medium text-ink">{agent.uploader_name || agent.uploader_phone}</span>
-      </td>
-      <td className="px-2 py-1.5">
-        <span className="text-xs text-ink-secondary">{agent.team_name || '미지정'}</span>
-      </td>
-      <td className="px-2 py-1.5 text-center">
-        <span className="text-xs text-ink-secondary font-mono">
-          {formatDurationCompact(agent.total_duration)}
-        </span>
-      </td>
-      <td className="px-2 py-1.5 text-center">
-        <span className="text-xs font-semibold text-ink">{agent.total_calls}</span>
-      </td>
-      <td className="px-2 py-1.5 text-center">
-        <span className="text-xs text-ink-secondary">{agent.outgoing}</span>
-      </td>
-      <td className="px-2 py-1.5 text-center">
-        <span className="text-xs text-ink-secondary">{agent.incoming}</span>
-      </td>
-      <td className="px-2 py-1.5 text-center">
-        <span className={`text-xs ${agent.missed > 0 ? 'text-negative font-medium' : 'text-ink-secondary'}`}>
-          {agent.missed}
-        </span>
-      </td>
-      <td className="px-2 py-1.5 text-center">
-        <span className={`text-xs font-semibold ${scoreColor}`}>
-          {score != null ? score : '-'}
-        </span>
-      </td>
-    </tr>
+    <div className="px-3 py-3 flex flex-col" style={{ fontFamily: 'Pretendard, -apple-system, sans-serif', height: 'calc(100vh - 48px)' }}>
+
+      {/* ── 필터 바 ── */}
+      <div className="flex flex-wrap items-center gap-2 mb-2 bg-gray-50 border border-gray-300 px-3 py-1.5 shrink-0">
+        <span className="text-[12px] font-bold text-gray-700 mr-1">기간</span>
+        <div className="flex items-center gap-1">
+          <input type="date" value={startDate} max={endDate}
+            onChange={e => setStartDate(e.target.value)}
+            className="border border-gray-300 px-1.5 py-0.5 text-[11px] text-gray-700 bg-white" />
+          <span className="text-[11px] text-gray-400">~</span>
+          <input type="date" value={endDate} min={startDate}
+            onChange={e => setEndDate(e.target.value)}
+            className="border border-gray-300 px-1.5 py-0.5 text-[11px] text-gray-700 bg-white" />
+        </div>
+        <div className="flex items-center gap-1">
+          {QUICK_RANGES.map(r => (
+            <button key={r.label} onClick={() => handleQuickRange(r.calc)}
+              className="px-2 py-0.5 text-[11px] border border-gray-300 bg-white text-gray-600 hover:bg-gray-100">
+              {r.label}
+            </button>
+          ))}
+        </div>
+        {loading && <span className="text-[11px] text-gray-400 animate-pulse">불러오는 중...</span>}
+      </div>
+
+      {/* ── 팀 요약 테이블 ── */}
+      <div className="overflow-auto mb-2 shrink-0 border border-gray-300">
+        <table style={{ borderCollapse: 'collapse' }}>
+          <colgroup>
+            <col style={{ width: '80px' }} />
+            <col style={{ width: '48px' }} />
+            <col style={{ width: '64px' }} />
+            <col style={{ width: '56px' }} />
+            <col style={{ width: '56px' }} />
+            <col style={{ width: '48px' }} />
+            <col style={{ width: '80px' }} />
+            <col style={{ width: '56px' }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th className={TH} style={TH_STYLE}>팀</th>
+              <th className={TH} style={TH_STYLE}>인원</th>
+              <th className={TH} style={TH_STYLE}>총통화</th>
+              <th className={TH} style={TH_STYLE}>발신</th>
+              <th className={TH} style={TH_STYLE}>수신</th>
+              <th className={TH} style={TH_STYLE}>부재</th>
+              <th className={TH} style={TH_STYLE}>총시간</th>
+              <th className={TH} style={TH_STYLE}>AI점수</th>
+            </tr>
+          </thead>
+          <tbody>
+            {allTeamRows.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="border border-gray-300 text-center text-[12px] text-gray-400 py-4">
+                  데이터가 없습니다
+                </td>
+              </tr>
+            ) : (
+              allTeamRows.map(t => {
+                const isSelected = (t.teamName === '전체' && selectedTeam === null) || selectedTeam === t.teamName
+                return (
+                  <tr key={t.teamName}
+                    onClick={() => t.teamName === '전체' ? setSelectedTeam(null) : handleTeamClick(t.teamName)}
+                    className={`cursor-pointer ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                    style={{ height: '28px' }}>
+                    <td className={`${TD} font-medium ${isSelected ? 'text-blue-700' : ''}`}>{t.teamName}</td>
+                    <td className={TD}>{t.agent_count}<span className="text-gray-400 text-[10px]">명</span></td>
+                    <td className={`${TD} font-bold`}>{t.total_calls}</td>
+                    <td className={`${TD} text-green-600`}>{t.outgoing}</td>
+                    <td className={`${TD} text-red-600`}>{t.incoming}</td>
+                    <td className={`${TD} ${t.missed > 0 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>{t.missed}</td>
+                    <td className={`${TD} text-gray-600`}>{formatDurationCompact(t.total_duration)}</td>
+                    <td className={`${TD} ${scoreColor(t.avg_score)}`}>{fmtScore(t.avg_score)}</td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── 필터 표시 ── */}
+      <div className="flex items-center gap-2 mb-2 bg-gray-50 border border-gray-300 px-3 py-1.5 shrink-0">
+        <span className="text-[12px] font-bold text-gray-700">직원별 성과</span>
+        {selectedTeam && (
+          <>
+            <span className="text-[11px] text-blue-600 font-medium">{selectedTeam}</span>
+            <button onClick={() => setSelectedTeam(null)}
+              className="text-[11px] text-blue-600 hover:underline">초기화</button>
+          </>
+        )}
+        <span className="text-[11px] text-gray-400 ml-auto">{sortedAgents.length}명</span>
+      </div>
+
+      {/* ── 성과 테이블 ── */}
+      <div className="overflow-auto flex-1 border border-gray-300">
+        <table style={{ borderCollapse: 'collapse' }}>
+          <colgroup>
+            <col style={{ width: '36px' }} />
+            <col style={{ width: '72px' }} />
+            <col style={{ width: '72px' }} />
+            <col style={{ width: '80px' }} />
+            <col style={{ width: '56px' }} />
+            <col style={{ width: '48px' }} />
+            <col style={{ width: '48px' }} />
+            <col style={{ width: '48px' }} />
+            <col style={{ width: '56px' }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th className={TH} style={TH_STYLE}>No.</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('uploader_name')}>이름{sortArrow('uploader_name')}</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('team_name')}>팀{sortArrow('team_name')}</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('total_duration')}>총통화시간{sortArrow('total_duration')}</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('total_calls')}>총통화{sortArrow('total_calls')}</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('outgoing')}>발신{sortArrow('outgoing')}</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('incoming')}>수신{sortArrow('incoming')}</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('missed')}>부재{sortArrow('missed')}</th>
+              <th className={`${TH} cursor-pointer hover:text-blue-600`} style={TH_STYLE}
+                onClick={() => handleSort('avg_score')}>AI점수{sortArrow('avg_score')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedAgents.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="border border-gray-300 text-center text-[12px] text-gray-400 py-8">
+                  해당 기간에 데이터가 없습니다
+                </td>
+              </tr>
+            ) : (
+              sortedAgents.map((agent, idx) => (
+                <tr key={agent.uploader_phone} className="hover:bg-blue-50" style={{ height: '28px' }}>
+                  <td className={`${TD} text-gray-500`}>{idx + 1}</td>
+                  <td className={`${TD} font-medium`}>{agent.uploader_name || agent.uploader_phone}</td>
+                  <td className={TD}>{agent.team_name || '미지정'}</td>
+                  <td className={`${TD} text-gray-600 font-mono`}>{formatDurationCompact(agent.total_duration)}</td>
+                  <td className={`${TD} font-bold text-gray-900`}>{agent.total_calls}</td>
+                  <td className={`${TD} text-green-600`}>{agent.outgoing}</td>
+                  <td className={`${TD} text-red-600`}>{agent.incoming}</td>
+                  <td className={`${TD} ${agent.missed > 0 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>{agent.missed}</td>
+                  <td className={`${TD} ${scoreColor(agent.avg_score)}`}>{fmtScore(agent.avg_score)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }

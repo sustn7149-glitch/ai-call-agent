@@ -25,14 +25,18 @@ export default function Analytics() {
     fetch('/api/analytics/daily').then(r => r.json()).then(setDaily).catch(() => {})
     fetch('/api/analytics/team').then(r => r.json()).then(setTeam).catch(() => {})
     fetch('/api/analytics/direction').then(r => r.json()).then(d => {
-      setDirection(d.map(item => ({
-        name: item.direction === 'IN' ? '수신' : item.direction === 'OUT' ? '발신' : '기타',
-        value: item.count,
-      })))
+      setDirection(
+        d.filter(item => item.direction === 'IN' || item.direction === 'OUT')
+         .map(item => ({
+           name: item.direction === 'IN' ? '수신' : '발신',
+           value: item.count,
+           direction: item.direction,
+         }))
+      )
     }).catch(() => {})
   }, [])
 
-  const pieColors = [CHART_COLORS.red, CHART_COLORS.green, CHART_COLORS.gray]
+  const directionColorMap = { '수신': CHART_COLORS.red, '발신': CHART_COLORS.green }
 
   return (
     <div className="px-3 py-3" style={{ fontFamily: 'Pretendard, -apple-system, sans-serif' }}>
@@ -117,8 +121,8 @@ export default function Analytics() {
                     dataKey="value" nameKey="name"
                     label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                     labelLine={{ stroke: '#9CA3AF', strokeWidth: 1 }}>
-                    {direction.map((_, idx) => (
-                      <Cell key={idx} fill={pieColors[idx % pieColors.length]} />
+                    {direction.map((entry, idx) => (
+                      <Cell key={idx} fill={directionColorMap[entry.name] || CHART_COLORS.gray} />
                     ))}
                   </Pie>
                   <Tooltip contentStyle={{ fontSize: '12px' }} />

@@ -6,6 +6,9 @@ const TH = 'border border-gray-300 text-[12px] font-bold text-center text-gray-7
 const TD = 'border border-gray-300 text-[12px] text-center text-gray-700 px-2'
 const TH_STYLE = { background: '#ECEBFF', height: '26px', position: 'sticky', top: 0, zIndex: 10 }
 
+// 전화번호 정규화: +82xxx → 0xxx (포맷 통일)
+const normalizePhone = (p) => p ? p.replace(/^\+82/, '0') : p
+
 export default function LiveMonitor() {
   const { socket } = useSocket()
   const [stats, setStats] = useState(null)
@@ -51,7 +54,14 @@ export default function LiveMonitor() {
   const fetchCallStates = useCallback(async () => {
     try {
       const res = await fetch('/api/call-states')
-      setCallStates(await res.json())
+      const raw = await res.json()
+      // 키를 정규화된 형식과 원본 형식 모두 저장하여 매칭 확률 향상
+      const normalized = {}
+      Object.entries(raw).forEach(([phone, state]) => {
+        normalized[phone] = state
+        normalized[normalizePhone(phone)] = state
+      })
+      setCallStates(normalized)
     } catch (err) {
       console.error('Failed to fetch call states:', err)
     }
@@ -70,20 +80,25 @@ export default function LiveMonitor() {
 
     const handleCallStatus = (data) => {
       if (data && data.userPhone) {
+        const rawPhone = data.userPhone
+        const normPhone = normalizePhone(rawPhone)
+        const stateVal = {
+          status: 'oncall',
+          number: data.number || '',
+          direction: data.direction || 'IN',
+          startTime: new Date().toISOString()
+        }
         if (data.status === 'OFFHOOK' || data.status === 'RINGING') {
           setCallStates(prev => ({
             ...prev,
-            [data.userPhone]: {
-              status: 'oncall',
-              number: data.number || '',
-              direction: data.direction || 'IN',
-              startTime: new Date().toISOString()
-            }
+            [rawPhone]: stateVal,
+            [normPhone]: stateVal
           }))
         } else if (data.status === 'IDLE') {
           setCallStates(prev => {
             const next = { ...prev }
-            delete next[data.userPhone]
+            delete next[rawPhone]
+            delete next[normPhone]
             return next
           })
         }

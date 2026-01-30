@@ -75,11 +75,7 @@ async function processAnalysisJob(job) {
       const dbResults = {
         transcript: transcribedText,
         raw_transcript: transcribedText,
-        summary: durationTooShort && textTooShort
-          ? '통화 시간이 짧고 내용이 부족하여 평가를 생략합니다.'
-          : durationTooShort
-            ? '통화 시간이 30초 미만이어서 평가를 생략합니다.'
-            : 'STT 텍스트가 50자 미만이어서 평가를 생략합니다.',
+        summary: durationTooShort ? '30초 미만 평가생략' : 'STT 50자 미만 평가생략',
         sentiment: null,
         sentiment_score: null,
         ai_score: null,

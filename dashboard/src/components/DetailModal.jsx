@@ -106,10 +106,10 @@ export default function DetailModal({ call, onClose }) {
                     <p className="text-xs text-ink-tertiary mb-1">AI 점수</p>
                     <div className="flex items-center gap-2">
                       <span className="text-xl font-semibold text-ink">
-                        {call.ai_score != null ? call.ai_score : '-'}
+                        {call.ai_score != null && call.ai_score > 0 ? call.ai_score : '-'}
                       </span>
                       <span className="text-xs text-ink-tertiary">/ 10</span>
-                      {call.ai_score != null && (
+                      {call.ai_score != null && call.ai_score > 0 && (
                         <div className="w-20 h-1.5 bg-surface-panel rounded-full overflow-hidden">
                           <div
                             className={`h-full rounded-full ${call.ai_score >= 7 ? 'bg-positive' : call.ai_score >= 4 ? 'bg-caution' : 'bg-negative'}`}

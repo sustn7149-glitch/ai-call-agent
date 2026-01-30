@@ -289,14 +289,22 @@ async function generateSummary(text, options = {}) {
     throw new Error('요약할 텍스트가 비어있습니다.');
   }
 
-  const prompt = `다음 고객 상담 통화의 핵심 내용을 개조식(Bullet points)으로 요약해주세요.
+  const prompt = `다음 고객 상담 통화의 핵심을 한 줄로 간결하게 요약하세요.
 
 규칙:
-1. 반드시 "- "로 시작하는 개조식 3~5개 항목으로 작성
-2. 각 항목은 "주어 + 핵심 내용" 구조 (예: "- 고객이 요금제 변경 요청")
-3. 통화의 목적(시작) → 내용(진행) → 결론(결과)이 드러나도록 구성
-4. 인사말, 대기 안내 등 부수적 내용 제외
-5. 서술형 줄글 금지
+1. 반드시 한 줄로 작성 (50자 이내 권장, 최대 80자)
+2. 핵심 흐름을 "→" 또는 "," 로 연결
+3. 통화 목적과 결과가 드러나도록 구성
+4. 인사말, 대기 안내, 부수적 표현 제외
+5. "-"로 시작하지 말고, 바로 핵심 내용으로 시작
+6. 개조식(Bullet points) 금지, 줄바꿈 금지
+
+올바른 예시:
+- 아이폰17 색상변경으로 최종진행결정함
+- 신청서 인증 → 인증서미보유 → 추후 재컨택 예정
+- 요금제변경 문의 → 현재 요금제 유지 결정
+- 해지방어 → 3개월 할인 제안 → 고객 수락
+- 배송일정 확인 → 내일 도착 안내 완료
 
 통화 내용:
 ${text}
@@ -321,7 +329,19 @@ async function analyzeSentiment(text, teamPrompt, options = {}) {
 
   const prompt = `다음 고객 상담 통화의 감정과 상담 품질을 분석해주세요.${evaluationContext}
 
-[점수 루브릭]
+[점수 면제 기준 — 아래 경우 점수: 0 으로 응답]
+- 단순 문의 (배송 확인, 영업시간, 잔액 조회 등 정보 전달만 하는 통화)
+- 잘못 걸린 전화, 부재중 응답
+- 단순 일방적 안내 (일정 공지, 결과 통보 등)
+- 고객 설득이나 문제 해결 노력이 필요 없는 간단한 응대
+
+[점수 부여 대상 — 아래 경우에만 점수를 매기세요]
+- 고객을 설득하거나 영업/세일즈 노력이 있는 통화
+- 민원/불만 대응 및 방어 상담
+- 복잡한 문제 해결을 위한 심층 상담
+- 고객 유지/해지방어를 위한 통화
+
+[점수 루브릭 (점수 부여 대상에만 적용)]
 9~10: 탁월 — 고객 감동, 기대 이상의 서비스
 7~8: 우수 — 목적 달성, 고객 만족, 전문적 응대
 5~6: 보통 — 기본적 업무 수행, 특별한 문제 없음
@@ -333,7 +353,7 @@ ${text}
 
 다음 형식으로 정확히 답변해주세요:
 감정: [positive/negative/neutral 중 하나]
-점수: [1-10 사이의 정수, 위 루브릭 참조]
+점수: [0 또는 1-10 사이의 정수. 면제 대상이면 0, 아니면 루브릭 참조]
 이유: [위 점수를 부여한 구체적 근거를 한 문장으로]`;
 
   try {
@@ -344,11 +364,14 @@ ${text}
     const reasonMatch = response.match(/이유:\s*(.+)/);
 
     let sentiment = 'neutral';
-    let score = 5;
+    let score = null;
     let reason = '';
 
     if (sentimentMatch) sentiment = sentimentMatch[1].toLowerCase();
-    if (scoreMatch) score = Math.min(10, Math.max(1, parseInt(scoreMatch[1], 10)));
+    if (scoreMatch) {
+      const rawScore = parseInt(scoreMatch[1], 10);
+      score = rawScore === 0 ? null : Math.min(10, Math.max(1, rawScore));
+    }
     if (reasonMatch) reason = reasonMatch[1].trim();
 
     return { sentiment, score, reason };
@@ -516,7 +539,7 @@ const UNIFIED_ANALYSIS_SCHEMA = {
   properties: {
     summary: {
       type: 'string',
-      description: '통화 핵심 내용 개조식 요약 (각 항목 "- "로 시작, 3~5개)'
+      description: '통화 핵심을 한 줄로 간결 요약 (50자 이내, "→"로 흐름 연결, 줄바꿈 금지)'
     },
     sentiment: {
       type: 'string',
@@ -525,9 +548,9 @@ const UNIFIED_ANALYSIS_SCHEMA = {
     },
     sentiment_score: {
       type: 'integer',
-      minimum: 1,
+      minimum: 0,
       maximum: 10,
-      description: '상담 품질 점수 (1=매우 부정, 5=중립, 10=매우 긍정)'
+      description: '상담 품질 점수 (0=점수면제(단순문의/간단응대), 1~10=상담품질 루브릭)'
     },
     sentiment_reason: {
       type: 'string',
@@ -604,19 +627,25 @@ async function analyzeUnified(text, teamPrompt, teamName) {
 
 [분석 요구사항]
 
-1. summary (개조식 요약)
-   - "- "로 시작하는 3~5개 항목
-   - 각 항목은 "주어 + 핵심 내용" 구조로 작성 (예: "- 고객이 요금제 변경 요청")
-   - 통화의 시작(목적), 진행(내용), 결론(결과)이 드러나도록 구성
-   - 불필요한 인사말, 대기 안내 등 제외
+1. summary (한 줄 요약)
+   - 반드시 한 줄로 작성 (50자 이내 권장, 최대 80자)
+   - 핵심 흐름을 "→" 또는 "," 로 연결
+   - 통화 목적과 결과가 드러나도록 구성
+   - 인사말, 대기 안내, 부수적 표현 제외
+   - 예: "아이폰17 색상변경으로 최종진행결정함", "신청서 인증 → 인증서미보유 → 추후 재컨택 예정"
 
 2. sentiment (고객 감정)
    - positive: 고객이 만족, 감사 표현, 협조적 태도
    - negative: 고객이 불만, 화남, 거부, 항의
    - neutral: 담담한 업무 처리, 특별한 감정 표현 없음
 
-3. sentiment_score (상담 품질 점수, 1~10)
-   [점수 루브릭]
+3. sentiment_score (상담 품질 점수)
+   [점수 면제 → 0 으로 응답하는 경우]
+   - 단순 문의 (배송 확인, 영업시간, 잔액 조회 등 정보 전달만 하는 통화)
+   - 잘못 걸린 전화, 부재중 응답, 단순 일방적 안내
+   - 고객 설득이나 문제 해결 노력이 필요 없는 간단한 응대
+
+   [점수 부여 대상에만 적용하는 루브릭 (1~10)]
    9~10: 탁월 — 고객 감동, 기대 이상의 서비스, 완벽한 문제 해결
    7~8: 우수 — 목적 달성, 고객 만족, 전문적 응대
    5~6: 보통 — 기본적 업무 수행, 특별한 문제 없음
@@ -678,7 +707,7 @@ async function analyzeCall(text, teamPrompt, teamName) {
 
         const sentiment = {
           sentiment: result.sentiment || 'neutral',
-          score: result.sentiment_score || 5,
+          score: result.sentiment_score === 0 ? null : (result.sentiment_score || null),
           reason: result.sentiment_reason || ''
         };
 

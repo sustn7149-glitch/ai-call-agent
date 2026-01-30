@@ -70,7 +70,7 @@ function emotionColor(e) {
 
 /* ── 점수 색상 ── */
 function scoreColor(s) {
-  if (s == null) return 'text-gray-400'
+  if (s == null || s === 0) return 'text-gray-400'
   if (s >= 7) return 'text-blue-700 font-bold'
   if (s >= 4) return 'text-gray-700'
   return 'text-red-600 font-bold'
@@ -100,13 +100,13 @@ function parseOutcome(outcome) {
 /* ══════════════════════════════════════════ */
 
 const TH = 'border border-gray-300 text-[12px] font-bold text-center text-gray-700 px-2 whitespace-nowrap'
-const TD = 'border border-gray-300 text-[12px] text-center text-gray-700 px-2'
+const TD = 'border border-gray-300 text-[12px] text-center text-gray-700 px-2 whitespace-nowrap'
 const TH_STYLE = { background: '#ECEBFF', height: '26px', position: 'sticky', top: 0, zIndex: 10 }
 
 const PAGE_OPTIONS = [20, 50, 100, 200, 500, 1000]
 
 /* colgroup 너비: No 녹취일자 팀 담당자 구분 고객명 전화번호 통화시간 요약(auto) 결과 감정 점수 재생 = 13열 */
-const COL_WIDTHS = ['36px', '170px', '60px', '64px', '48px', '64px', '110px', '68px', 'auto', '96px', '48px', '44px', '56px']
+const COL_WIDTHS = ['36px', '150px', '64px', '64px', '48px', '68px', '120px', '68px', 'auto', '100px', '48px', '44px', '56px']
 
 export default function History() {
   const { socket } = useSocket()
@@ -272,7 +272,7 @@ export default function History() {
 
       {/* ── 테이블 (스크롤 영역) ── */}
       <div className="overflow-auto flex-1 border border-gray-300">
-        <table className="w-full table-fixed" style={{ borderCollapse: 'collapse' }}>
+        <table className="w-full" style={{ borderCollapse: 'collapse', tableLayout: 'fixed' }}>
           <colgroup>
             {COL_WIDTHS.map((w, i) => <col key={i} style={{ width: w }} />)}
           </colgroup>
@@ -316,7 +316,7 @@ export default function History() {
                   <tr key={call.id}
                     onClick={() => handleSelectCall(call)}
                     className={`cursor-pointer ${isLowScore ? 'bg-red-100 hover:bg-red-200' : 'hover:bg-blue-50'}`}
-                    style={{ height: '28px' }}>
+                    style={{ height: '32px' }}>
 
                     {/* No. (역순) */}
                     <td className={`${TD} text-gray-500`}>{filtered.length - globalIdx}</td>
@@ -362,8 +362,8 @@ export default function History() {
                     {/* 통화시간 */}
                     <td className={`${TD} text-gray-600 whitespace-nowrap`}>{fmtDuration(call.duration)}</td>
 
-                    {/* 요약 (넓게, truncate + title) */}
-                    <td className={`${TD} text-left truncate text-gray-600`} title={summary}>
+                    {/* 요약 (넓게, overflow hidden) */}
+                    <td className="border border-gray-300 text-[12px] text-left text-gray-600 px-2 overflow-hidden text-ellipsis whitespace-nowrap max-w-0" title={summary}>
                       {summary || '-'}
                     </td>
 
@@ -416,7 +416,7 @@ export default function History() {
 
                     {/* 점수 */}
                     <td className={`${TD} ${scoreColor(call.ai_score)}`}>
-                      {call.ai_score != null ? call.ai_score : '-'}
+                      {call.ai_score != null && call.ai_score > 0 ? call.ai_score : '-'}
                     </td>
 
                     {/* 재생 버튼 */}

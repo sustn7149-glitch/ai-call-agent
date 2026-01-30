@@ -6,6 +6,12 @@ const dbPath = process.env.DB_PATH || path.join(__dirname, "../../database.sqlit
 
 let db = null;
 
+// 전화번호 정규화: +82 → 0 형식 통일
+const normalizePhone = (phone) => {
+  if (!phone) return phone;
+  return phone.replace(/^\+82/, '0');
+};
+
 const saveDatabase = () => {
   if (db) {
     const data = db.export();
@@ -558,9 +564,11 @@ module.exports = {
 
   getAgentTeam: (phone) => {
     if (!db) return null;
+    // +82 → 0 정규화하여 agents 테이블과 매칭
+    const normalized = normalizePhone(phone);
     const result = db.exec(
-      `SELECT team_name FROM agents WHERE phone_number = ?`,
-      [phone]
+      `SELECT team_name FROM agents WHERE phone_number = ? OR phone_number = ?`,
+      [phone, normalized]
     );
     if (!result[0] || !result[0].values.length) return null;
     return result[0].values[0][0];
@@ -624,9 +632,10 @@ module.exports = {
 
   getAgentTeamId: (phone) => {
     if (!db) return null;
+    const normalized = normalizePhone(phone);
     const result = db.exec(
-      `SELECT team_id FROM agents WHERE phone_number = ?`,
-      [phone]
+      `SELECT team_id FROM agents WHERE phone_number = ? OR phone_number = ?`,
+      [phone, normalized]
     );
     if (!result[0] || !result[0].values.length) return null;
     return result[0].values[0][0];
@@ -662,8 +671,9 @@ module.exports = {
     const result = db.exec(
       `SELECT direction, COUNT(*) as count
        FROM calls
-       WHERE recording_path IS NOT NULL
-       GROUP BY direction`
+       WHERE recording_path IS NOT NULL AND direction IS NOT NULL AND direction != ''
+       GROUP BY direction
+       ORDER BY direction ASC`
     );
     return rowsToObjects(result);
   },
