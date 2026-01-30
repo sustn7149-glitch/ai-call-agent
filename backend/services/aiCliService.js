@@ -77,6 +77,51 @@ async function callClaude(prompt, options = {}) {
 }
 
 /**
+ * Claude Code CLI 구조화 출력 호출 (Phase 2)
+ * --json-schema: JSON Schema 강제로 구조화된 응답 보장
+ * --output-format json: CLI 메타데이터 JSON 반환 (structured_output 필드)
+ */
+async function callClaudeStructured(prompt, jsonSchema, options = {}) {
+  const model = options.model || CLAUDE_MODEL_SMART;
+  const args = [
+    '-p', '--model', model,
+    '--output-format', 'json',
+    '--json-schema', JSON.stringify(jsonSchema)
+  ];
+  const timeout = options.timeout || 180000;
+
+  console.log(`[AI-CLI] Claude Structured (${model}) 호출 중...`);
+  const rawOutput = await execCli(path.join(CLI_BIN, 'claude'), args, prompt, timeout);
+
+  // --output-format json은 CLI 메타데이터 JSON을 반환
+  // structured_output 필드에 스키마 준수 데이터가 들어있음
+  try {
+    const envelope = JSON.parse(rawOutput);
+    if (envelope.structured_output) {
+      console.log(`[AI-CLI] Claude Structured 응답: ${JSON.stringify(envelope.structured_output).length} chars`);
+      return envelope.structured_output;
+    }
+    // structured_output이 없으면 result에서 JSON 추출 시도
+    if (envelope.result) {
+      const jsonMatch = envelope.result.match(/```json\s*([\s\S]*?)\s*```/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[1]);
+      }
+      return JSON.parse(envelope.result);
+    }
+    throw new Error('structured_output 필드가 없습니다');
+  } catch (parseErr) {
+    if (parseErr.message.includes('structured_output')) throw parseErr;
+    // JSON 파싱 실패 시 텍스트에서 JSON 추출 시도
+    const jsonMatch = rawOutput.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    throw new Error(`구조화 응답 파싱 실패: ${parseErr.message}`);
+  }
+}
+
+/**
  * Gemini CLI 호출
  * positional argument로 프롬프트 전달 (one-shot 모드)
  * spawn이므로 shell escaping 불필요, 긴 텍스트도 안전
@@ -400,8 +445,101 @@ function getDefaultTeamPrompt(teamName) {
   return null;
 }
 
+// ===== Phase 2: 통합 분석 JSON Schema =====
+
+const UNIFIED_ANALYSIS_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: {
+      type: 'string',
+      description: '통화 핵심 내용 개조식 요약 (각 항목 "- "로 시작, 3~5개)'
+    },
+    sentiment: {
+      type: 'string',
+      enum: ['positive', 'negative', 'neutral'],
+      description: '고객 감정 및 상담 품질 종합 판단'
+    },
+    sentiment_score: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 10,
+      description: '상담 품질 점수 (1=매우 부정, 5=중립, 10=매우 긍정)'
+    },
+    sentiment_reason: {
+      type: 'string',
+      description: '감정/점수 판단 근거 (한 문장)'
+    },
+    customer_name: {
+      type: ['string', 'null'],
+      description: '통화에서 명확히 언급된 고객 이름 (없으면 null)'
+    },
+    outcome: {
+      type: 'string',
+      description: '통화 결과 판정 ("성공: 사유" / "실패: 사유" / "보류: 판단불가")'
+    }
+  },
+  required: ['summary', 'sentiment', 'sentiment_score', 'outcome']
+};
+
 /**
- * 통합 분석 파이프라인 (ollamaService.analyzeCall과 동일한 인터페이스)
+ * 팀 유형별 결과 판정 기준 텍스트 생성
+ */
+function buildOutcomeContext(teamName) {
+  const name = (teamName || '').toLowerCase();
+
+  if (name.includes('영업') || name.includes('세일즈') || name.includes('sales')) {
+    return `[영업팀 결과 판정 기준]
+성공: 구매확정, 긍정검토, 계약동의
+실패: 가격부담, 타사비교, 필요없음, 단순거절, 재통화요청`;
+  }
+  if (name.includes('민원') || name.includes('cs') || name.includes('고객') || name.includes('서비스') || name.includes('상담')) {
+    return `[민원/CS팀 결과 판정 기준]
+성공: 방어확정, 민원철회, 안내수용
+실패: 상급자요청, 보상요구, 해지요구, 방어실패`;
+  }
+  return `[일반 상담 결과 판정 기준]
+성공: 목적달성, 고객만족
+실패: 미해결, 고객불만`;
+}
+
+/**
+ * Phase 2: 통합 분석 (요약 + 감정 + 고객명 + 결과를 JSON 한 번에)
+ * Claude --json-schema로 구조화된 응답 보장, 정규식 파싱 불필요
+ */
+async function analyzeUnified(text, teamPrompt, teamName) {
+  let evaluationContext = '';
+  if (teamPrompt) {
+    evaluationContext = `\n[팀 맞춤 평가 기준]\n${teamPrompt}\n위 기준을 반영하여 점수를 매겨주세요.\n`;
+  }
+
+  const outcomeContext = buildOutcomeContext(teamName);
+
+  const prompt = `당신은 콜센터 통화 품질 분석 전문가입니다. 아래 통화 내용을 분석하여 JSON으로 응답해주세요.
+
+[분석 요구사항]
+1. summary: 핵심 내용을 "- "로 시작하는 개조식(3~5개 항목)으로 요약
+2. sentiment: 고객 감정과 상담 품질을 종합하여 positive/negative/neutral 판단
+3. sentiment_score: 1~10 정수 (1=매우 부정, 5=중립, 10=매우 긍정)
+4. sentiment_reason: 감정/점수 판단 근거를 한 문장으로
+5. customer_name: 통화에서 명확히 언급된 고객 이름 (추측 금지, 없으면 null)
+6. outcome: 통화 결과 판정 ("성공: 사유" / "실패: 사유" / "보류: 판단불가")
+${evaluationContext}
+${outcomeContext}
+
+[통화 내용]
+${text}`;
+
+  return await callClaudeStructured(prompt, UNIFIED_ANALYSIS_SCHEMA, {
+    model: CLAUDE_MODEL_SMART,
+    timeout: 180000
+  });
+}
+
+/**
+ * 통합 분석 파이프라인 (Phase 2: 5회 → 2회 호출)
+ * Step 1: 대화 분리 (haiku, 텍스트 응답)
+ * Step 2: 통합 분석 (sonnet, JSON Schema 구조화 응답)
+ *
  * @returns {{ formattedText, summary, sentiment, customerName, outcome }}
  */
 async function analyzeCall(text, teamPrompt, teamName) {
@@ -412,10 +550,44 @@ async function analyzeCall(text, teamPrompt, teamName) {
   const effectivePrompt = teamPrompt || getDefaultTeamPrompt(teamName) || null;
   const providerLabel = AI_PROVIDER.toUpperCase();
 
+  // Claude provider일 때만 Phase 2 최적화 적용
+  // 다른 provider(gemini, codex, ollama)는 --json-schema 미지원 → Phase 1 방식 유지
+  const usePhase2 = (AI_PROVIDER === 'claude');
+
   try {
-    console.log(`[${providerLabel}] Step 1/5: 대화 분리...`);
+    // Step 1: 대화 분리 (공통 - haiku로 빠르게)
+    console.log(`[${providerLabel}] Step 1/2: 대화 분리...`);
     const formattedText = await formatConversation(text);
 
+    if (usePhase2) {
+      // Phase 2: JSON Schema 통합 분석 (1회 호출)
+      console.log(`[${providerLabel}] Step 2/2: 통합 분석 (JSON Schema)...`);
+      const result = await analyzeUnified(text, effectivePrompt, teamName);
+
+      const sentiment = {
+        sentiment: result.sentiment || 'neutral',
+        score: result.sentiment_score || 5,
+        reason: result.sentiment_reason || ''
+      };
+
+      // customer_name 후처리
+      let customerName = result.customer_name || null;
+      if (customerName === '확인불가' || customerName === '없음' || customerName === 'null') {
+        customerName = null;
+      }
+
+      console.log(`[${providerLabel}] 통합 분석 완료 | 감정: ${sentiment.sentiment} (${sentiment.score}/10) | 결과: ${result.outcome}`);
+
+      return {
+        formattedText,
+        summary: result.summary,
+        sentiment,
+        customerName,
+        outcome: result.outcome || '보류: 판단불가'
+      };
+    }
+
+    // Phase 1 Fallback: 개별 호출 (non-Claude provider)
     console.log(`[${providerLabel}] Step 2/5: 요약...`);
     const summary = await generateSummary(text);
 
@@ -428,15 +600,9 @@ async function analyzeCall(text, teamPrompt, teamName) {
     console.log(`[${providerLabel}] Step 5/5: 결과 판정...`);
     const outcome = await analyzeOutcome(text, teamName);
 
-    return {
-      formattedText,
-      summary,
-      sentiment,
-      customerName,
-      outcome
-    };
+    return { formattedText, summary, sentiment, customerName, outcome };
   } catch (error) {
-    console.error(`[${providerLabel}] 통합 분석 실패:`, error.message);
+    console.error(`[${providerLabel}] 분석 실패:`, error.message);
     throw error;
   }
 }
@@ -444,6 +610,7 @@ async function analyzeCall(text, teamPrompt, teamName) {
 module.exports = {
   callAI,
   callClaude,
+  callClaudeStructured,
   callGemini,
   callCodex,
   formatConversation,
@@ -451,6 +618,7 @@ module.exports = {
   analyzeSentiment,
   extractCustomerName,
   analyzeOutcome,
+  analyzeUnified,
   getDefaultTeamPrompt,
   analyzeCall
 };
