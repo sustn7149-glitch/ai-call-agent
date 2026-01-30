@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { formatPhoneNumber } from '../utils'
 
 const TH = 'border border-gray-300 text-[12px] font-bold text-center text-gray-700 px-2 whitespace-nowrap'
 const TD = 'border border-gray-300 text-[12px] text-center text-gray-700 px-2'
@@ -366,7 +367,7 @@ function AgentManagement() {
                     className={!agent.team_id ? 'bg-amber-50' : ''}
                     style={{ height: '28px' }}>
                     <td className={`${TD} text-gray-500`}>{idx + 1}</td>
-                    <td className={`${TD} font-mono`}>{agent.phone_number}</td>
+                    <td className={`${TD} font-mono text-[10px]`}>{formatPhoneNumber(agent.phone_number)}</td>
                     <td className={`${TD} font-medium`}>
                       {agent.name || <span className="text-gray-400 italic">이름 없음</span>}
                     </td>

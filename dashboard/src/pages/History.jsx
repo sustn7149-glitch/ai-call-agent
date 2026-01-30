@@ -348,7 +348,7 @@ export default function History() {
                     <td className={`${TD} truncate`} title={call.customer_name || ''}>{call.customer_name || '-'}</td>
 
                     {/* 전화번호 + 통화 카운트 */}
-                    <td className={`${TD} font-mono text-gray-600 text-[11px]`}>
+                    <td className={`${TD} font-mono text-gray-600 text-[10px]`}>
                       {call.phone_number ? (
                         <>
                           {formatPhoneNumber(call.phone_number)}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import useSocket from '../hooks/useSocket'
+import { formatPhoneNumber } from '../utils'
 
 const TH = 'border border-gray-300 text-[12px] font-bold text-center text-gray-700 px-2 whitespace-nowrap'
 const TD = 'border border-gray-300 text-[12px] text-center text-gray-700 px-2'
@@ -191,8 +192,8 @@ export default function LiveMonitor() {
     if (!sec) return '-'
     const h = Math.floor(sec / 3600)
     const m = Math.floor((sec % 3600) / 60)
-    if (h > 0) return `${h}h ${m}m`
-    return `${m}m`
+    if (h > 0) return `${h}시간 ${m}분`
+    return `${m}분`
   }
 
   const totalOnline = mergedAgents.length
@@ -251,7 +252,21 @@ export default function LiveMonitor() {
 
       {/* ── 테이블 ── */}
       <div className="overflow-auto flex-1 border border-gray-300">
-        <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+        <table style={{ borderCollapse: 'collapse' }}>
+          <colgroup>
+            <col style={{ width: '36px' }} />
+            <col style={{ width: '64px' }} />
+            <col style={{ width: '64px' }} />
+            <col style={{ width: '64px' }} />
+            <col style={{ width: '56px' }} />
+            <col style={{ width: '110px' }} />
+            <col style={{ width: '44px' }} />
+            <col style={{ width: '48px' }} />
+            <col style={{ width: '40px' }} />
+            <col style={{ width: '40px' }} />
+            <col style={{ width: '40px' }} />
+            <col style={{ width: '72px' }} />
+          </colgroup>
           <thead>
             <tr>
               <th className={TH} style={TH_STYLE}>No.</th>
@@ -301,8 +316,8 @@ export default function LiveMonitor() {
                         <span className="text-green-700 font-bold">{getElapsedText(agent.phone)}</span>
                       ) : '-'}
                     </td>
-                    <td className={`${TD} font-mono text-gray-600`}>
-                      {isOncall && state?.number ? state.number : '-'}
+                    <td className={`${TD} font-mono text-gray-600 text-[10px]`}>
+                      {isOncall && state?.number ? formatPhoneNumber(state.number) : '-'}
                     </td>
                     <td className={TD}>
                       {isOncall && state ? (

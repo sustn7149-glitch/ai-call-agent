@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import AudioPlayer from './AudioPlayer'
+import { formatPhoneNumber } from '../utils'
 
 export default function DetailModal({ call, onClose }) {
   useEffect(() => {
@@ -133,7 +134,7 @@ export default function DetailModal({ call, onClose }) {
                 {/* Footer meta */}
                 <div className="flex items-center justify-between text-xs text-ink-tertiary pt-2 border-t border-line-light">
                   <div className="flex gap-3">
-                    {call.phone_number && <span>{call.phone_number}</span>}
+                    {call.phone_number && <span className="font-mono text-[10px]">{formatPhoneNumber(call.phone_number)}</span>}
                     {call.customer_name && <span>고객: {call.customer_name}</span>}
                   </div>
                   {call.analyzed_at && <span>분석 {call.analyzed_at}</span>}

@@ -474,15 +474,15 @@ module.exports = {
 
     const result = db.exec(
       `SELECT
-        uploader_name as name,
+        uploader_name,
         uploader_phone,
-        COALESCE(team_name, '미지정') as team,
+        COALESCE(team_name, '미지정') as team_name,
         COALESCE(SUM(duration), 0) as total_duration,
         COUNT(*) as total_calls,
         SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
         SUM(CASE WHEN direction = 'IN' AND duration > 0 THEN 1 ELSE 0 END) as incoming,
         SUM(CASE WHEN direction = 'IN' AND (duration = 0 OR duration IS NULL) THEN 1 ELSE 0 END) as missed,
-        AVG(CASE WHEN ai_score IS NOT NULL AND ai_score > 0 THEN ai_score ELSE NULL END) as avg_score
+        ROUND(AVG(CASE WHEN ai_score IS NOT NULL AND ai_score > 0 THEN ai_score ELSE NULL END), 1) as avg_score
        FROM calls
        WHERE date(created_at) >= date(?) AND date(created_at) <= date(?)
          AND uploader_name IS NOT NULL

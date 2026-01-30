@@ -246,12 +246,55 @@ app.get('/api/online-agents', async (req, res) => {
 // ========== Reports API ==========
 app.get('/api/reports/stats', (req, res) => {
   try {
-    const { start, end } = req.query;
-    if (!start || !end) {
-      return res.status(400).json({ error: 'start and end date parameters required' });
+    const { startDate, endDate, team } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate parameters required' });
     }
-    const result = db.getReportStats(start, end);
-    res.json(result);
+    const agents = db.getReportStats(startDate, endDate);
+
+    // Filter by team if specified
+    const filteredAgents = team
+      ? agents.filter(a => a.team_name === team)
+      : agents;
+
+    // Build team summary
+    const teamMap = {};
+    agents.forEach(a => {
+      const tn = a.team_name || '미지정';
+      if (!teamMap[tn]) {
+        teamMap[tn] = { team_name: tn, agent_count: 0, total_calls: 0, outgoing: 0, incoming: 0, missed: 0, total_duration: 0, score_sum: 0, score_count: 0 };
+      }
+      const t = teamMap[tn];
+      t.agent_count++;
+      t.total_calls += a.total_calls || 0;
+      t.outgoing += a.outgoing || 0;
+      t.incoming += a.incoming || 0;
+      t.missed += a.missed || 0;
+      t.total_duration += a.total_duration || 0;
+      if (a.avg_score != null) { t.score_sum += a.avg_score; t.score_count++; }
+    });
+    const teams = Object.values(teamMap).map(t => ({
+      ...t,
+      avg_score: t.score_count > 0 ? Math.round((t.score_sum / t.score_count) * 10) / 10 : null,
+    }));
+    teams.forEach(t => { delete t.score_sum; delete t.score_count; });
+
+    // Build global stats
+    const globalStats = {
+      agent_count: agents.length,
+      total_calls: agents.reduce((s, a) => s + (a.total_calls || 0), 0),
+      outgoing: agents.reduce((s, a) => s + (a.outgoing || 0), 0),
+      incoming: agents.reduce((s, a) => s + (a.incoming || 0), 0),
+      missed: agents.reduce((s, a) => s + (a.missed || 0), 0),
+      total_duration: agents.reduce((s, a) => s + (a.total_duration || 0), 0),
+      avg_score: (() => {
+        const scored = agents.filter(a => a.avg_score != null);
+        if (scored.length === 0) return null;
+        return Math.round((scored.reduce((s, a) => s + a.avg_score, 0) / scored.length) * 10) / 10;
+      })(),
+    };
+
+    res.json({ agents: filteredAgents, teams, globalStats });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
