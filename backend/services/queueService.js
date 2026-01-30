@@ -79,6 +79,12 @@ class QueueService {
             return redisClient;
         }
       },
+      settings: {
+        // N100 CPU + Whisper medium 모델: 긴 녹음파일 STT가 10분 이상 소요
+        lockDuration: 900000,      // 15분 (기본 30초 → job stall 방지)
+        stalledInterval: 900000,   // 15분마다 stall 체크
+        lockRenewTime: 450000,     // 7.5분마다 lock 자동 갱신
+      },
     });
 
     // Socket.io 인스턴스 (나중에 주입)
