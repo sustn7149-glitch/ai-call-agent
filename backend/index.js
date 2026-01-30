@@ -440,6 +440,30 @@ app.get('/api/analytics/direction', (req, res) => {
 const queueRoutes = require('./routes/queueRoutes');
 app.use('/api/queue', queueRoutes);
 
+// Requeue pending calls that aren't in the BullMQ queue
+app.post('/api/queue/requeue-pending', async (req, res) => {
+  try {
+    const pendingCalls = db.getPendingAnalysisCalls();
+    let queued = 0;
+    for (const call of pendingCalls) {
+      if (call.recording_path) {
+        await queueService.addAnalysisJob({
+          filePath: call.recording_path,
+          fileName: call.recording_path.split('/').pop(),
+          phoneNumber: call.phone_number || '',
+          callId: call.id
+        });
+        queued++;
+      }
+    }
+    console.log(`[Requeue] ${queued}/${pendingCalls.length} pending calls added to queue`);
+    res.json({ success: true, queued, total: pendingCalls.length });
+  } catch (err) {
+    console.error('[Requeue] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   const indexPath = path.join(dashboardPath, 'index.html');
@@ -462,8 +486,30 @@ db.ready().then(() => {
     console.log('[Server] Worker disabled (DISABLE_WORKER=true). Run worker separately on host.');
   }
 
-  server.listen(3000, '0.0.0.0', () => {
+  server.listen(3000, '0.0.0.0', async () => {
     console.log('Server running on 0.0.0.0:3000');
+
+    // 시작 시 pending 분석 건 자동 재큐잉
+    try {
+      const pendingCalls = db.getPendingAnalysisCalls();
+      if (pendingCalls.length > 0) {
+        let queued = 0;
+        for (const call of pendingCalls) {
+          if (call.recording_path) {
+            await queueService.addAnalysisJob({
+              filePath: call.recording_path,
+              fileName: call.recording_path.split('/').pop(),
+              phoneNumber: call.phone_number || '',
+              callId: call.id
+            });
+            queued++;
+          }
+        }
+        console.log(`[Startup] ${queued} pending calls requeued for analysis`);
+      }
+    } catch (e) {
+      console.error('[Startup] Requeue error:', e.message);
+    }
   });
 }).catch(err => {
   console.error('Failed to initialize database:', err);
