@@ -1,7 +1,7 @@
 # AI Call Agent - Project Master Document
 
 > **N100 Ubuntu Server (16GB RAM) 기반 AI 통화 분석 시스템**
-> 최종 업데이트: 2026-01-30
+> 최종 업데이트: 2026-01-30 (Phase 1~4 AI 고도화 완료)
 
 ---
 
@@ -29,8 +29,9 @@ Android 단말에서 통화 녹음을 캡처하여 서버로 업로드하고, AI
 | **Charts** | Recharts | 3.7 |
 | **Real-time** | Socket.io-client | 4.7 |
 | **Android** | Kotlin, Gradle | compileSdk 35 |
-| **STT** | faster-whisper (Python) | 1.1 |
-| **LLM** | Ollama (exaone3.5:2.4b) | latest |
+| **STT** | faster-whisper (Python), medium 모델 | 1.1 |
+| **LLM (Primary)** | Claude Code CLI (haiku + sonnet) | 2.1 |
+| **LLM (Fallback)** | Ollama (exaone3.5:2.4b) | latest |
 | **LLM CLI** | Claude Code, Gemini CLI, Codex CLI | 2.1, 0.25, 0.89 |
 | **Infra** | Docker Compose, Cloudflare Tunnel | - |
 
@@ -51,8 +52,8 @@ ai-call-agent/
 │   │   ├── queueService.js          # Bull Queue 관리 (327줄)
 │   │   ├── uploadService.js         # Multer 파일 업로드
 │   │   ├── whisperService.js        # Whisper STT 연동
-│   │   ├── ollamaService.js         # Ollama LLM 연동 (351줄)
-│   │   └── aiCliService.js          # CLI 기반 AI 프로바이더 (451줄)
+│   │   ├── ollamaService.js         # Ollama LLM 연동 (351줄, Fallback용)
+│   │   └── aiCliService.js          # CLI 기반 AI 프로바이더 (724줄, Primary)
 │   ├── workers/
 │   │   └── analysisWorker.js        # AI 분석 워커 (197줄)
 │   └── scripts/
@@ -213,7 +214,7 @@ ai-call-agent/
 
 ## 6. AI 분석 파이프라인
 
-### 처리 흐름
+### 처리 흐름 (Phase 2 적용 — 2회 호출 최적화)
 
 ```
 Android 녹취 업로드
@@ -224,46 +225,84 @@ Bull Queue 등록 → Redis 브로커
        ↓
 analysisWorker.js 처리 (동시성: 1)
        ↓
-┌──────────────────────────────────────┐
-│ Step 1: Whisper STT                  │
-│   POST http://stt-server:9000/asr   │
-│   → 음성 → 텍스트 변환             │
-├──────────────────────────────────────┤
-│ Step 2: 최소 기준 확인              │
-│   - 통화 30초 이상?                 │
-│   - STT 텍스트 50자 이상?           │
-│   → 미달 시 평가 생략              │
-├──────────────────────────────────────┤
-│ Step 3: 팀별 평가 프롬프트 조회     │
-│   teams.evaluation_prompt 사용      │
-├──────────────────────────────────────┤
-│ Step 4: AI 분석 (5단계)             │
-│   4-1. 대화 분리 (상담원/고객)      │
-│   4-2. 개조식 요약                  │
-│   4-3. 감정 분석 + 점수 (0~10)      │
-│   4-4. 고객명 추출                  │
-│   4-5. 통화 결과 판정               │
-├──────────────────────────────────────┤
-│ Step 5: DB 저장                     │
-│   analysis_results INSERT           │
-│   calls UPDATE (ai_status=completed)│
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│ Step 1: Whisper STT (medium 모델, Phase 4)           │
+│   POST http://stt-server:9000/asr                    │
+│   - medium 모델 + 한국어 콜센터 Initial Prompt       │
+│   - VAD 필터 + 환각 필터 + 저신뢰 세그먼트 필터      │
+│   → 음성 → 텍스트 변환 (타임아웃: 10분)             │
+├──────────────────────────────────────────────────────┤
+│ Step 2: 최소 기준 확인                               │
+│   - 통화 30초 이상?                                  │
+│   - STT 텍스트 50자 이상?                            │
+│   → 미달 시 AI 평가 생략 (STT 결과만 저장)          │
+├──────────────────────────────────────────────────────┤
+│ Step 3: 팀별 평가 프롬프트 조회                      │
+│   teams.evaluation_prompt 사용                       │
+├──────────────────────────────────────────────────────┤
+│ Step 4: AI 분석 (2회 호출, Phase 2+3)                │
+│                                                      │
+│   Call 1: 대화 분리 (Claude haiku)                   │
+│     - Few-shot 예시 3개 포함 (Phase 3)               │
+│     - 화자 판별 기준 명시 (상담원/고객)              │
+│     - 원문 100% 보존 규칙                            │
+│                                                      │
+│   Call 2: 통합 분석 (Claude sonnet, JSON Schema)     │
+│     - Chain-of-Thought 4단계 사고 절차 (Phase 3)     │
+│     - 5개 항목 동시 분석:                            │
+│       요약 / 감정 / 점수 / 고객명 / 결과 판정       │
+│     - 5-Level 점수 루브릭 적용 (Phase 3)             │
+│     - 팀별 결과 판정 기준 적용 (영업/CS/일반)        │
+│     - --json-schema 강제 → 정규식 파싱 불필요       │
+├──────────────────────────────────────────────────────┤
+│ Step 5: DB 저장                                      │
+│   analysis_results INSERT                            │
+│   calls UPDATE (ai_status=completed)                 │
+└──────────────────────────────────────────────────────┘
        ↓
 Socket.io → 대시보드 실시간 업데이트
 ```
 
 ### AI 프로바이더 설정
 
-| 프로바이더 | 환경변수 | 호출 방식 | 비고 |
-|-----------|---------|----------|------|
-| **Ollama** (기본) | `AI_PROVIDER=ollama` | HTTP API | Docker 내부 |
-| **Claude** | `AI_PROVIDER=claude` | CLI stdin pipe | 호스트에서 실행 |
-| **Gemini** | `AI_PROVIDER=gemini` | CLI positional arg | 호스트에서 실행 |
-| **Codex** | `AI_PROVIDER=codex` | CLI positional arg | 호스트에서 실행 |
+| 프로바이더 | 환경변수 | 호출 방식 | 호출 횟수 | 비고 |
+|-----------|---------|----------|----------|------|
+| **Claude** (권장) | `AI_PROVIDER=claude` | CLI stdin pipe | **2회** (haiku+sonnet) | 호스트에서 실행, JSON Schema |
+| **Gemini** | `AI_PROVIDER=gemini` | CLI positional arg | 5회 (개별) | 호스트에서 실행 |
+| **Codex** | `AI_PROVIDER=codex` | CLI positional arg | 5회 (개별) | 호스트에서 실행 |
+| **Ollama** (Fallback) | `AI_PROVIDER=ollama` | HTTP API | 5회 (개별) | Docker 내부 |
 
 CLI 도구 경로: `/home/sustn7149/.npm-global/bin/`
 
-**Fallback**: CLI 프로바이더 실패 시 자동으로 Ollama로 전환
+**Fallback Chain**: Claude 실패 → Gemini 자동 전환 → Ollama 최종 Fallback
+- `callAI()`가 `FALLBACK_CHAIN = ['claude', 'gemini', 'ollama']` 순서로 순차 시도
+- Phase 2 (Claude JSON Schema) 실패 시 → Phase 1 (개별 5회 호출)로 전환, Gemini부터 시작
+- 각 개별 분석 함수도 `options.provider`로 체인 시작점 지정 가능
+
+### Phase 3: 프롬프트 엔지니어링 상세
+
+| 기법 | 적용 대상 | 효과 |
+|------|----------|------|
+| **Few-shot 예시 3개** | 화자 분리 (formatConversation) | 분리 정확도 향상 |
+| **Chain-of-Thought 4단계** | 통합 분석 (analyzeUnified) | 분석 논리 투명화 |
+| **5-Level 점수 루브릭** | 감정 점수 (1~10) | 점수 일관성 확보 |
+| **팀별 결과 판정 기준** | outcome (영업/CS/일반) | 도메인 맞춤 판정 |
+| **주어+핵심 구조** | 요약 (summary) | 요약 품질 균일화 |
+
+### Phase 4: STT 품질 개선 상세
+
+| 항목 | 이전 | 현재 | 효과 |
+|------|------|------|------|
+| Whisper 모델 | `small` (~461MB) | `medium` (~1.5GB) | 정확도 대폭 향상 |
+| Initial Prompt | 없음 | 한국어 콜센터 도메인 단어 34개 | 도메인 인식률 향상 |
+| best_of | 1 (기본) | 3 | 후보 중 최선 선택 |
+| condition_on_previous_text | false | true | 대화 연속성 유지 |
+| speech_pad_ms | 100 (기본) | 200 | 음성 끊김 방지 |
+| no_speech_threshold | 0.6 | 0.6 | 비음성 구간 필터링 |
+| compression_ratio_threshold | 2.4 | 2.4 | 반복/환각 텍스트 필터 |
+| log_prob_threshold | -1.0 | -1.0 | 저신뢰 세그먼트 필터 |
+| STT 타임아웃 | 5분 | **10분** | 대용량 파일 처리 |
+| Docker 메모리 | 3GB | **4GB** | medium 모델 수용 |
 
 ---
 
@@ -274,12 +313,12 @@ CLI 도구 경로: `/home/sustn7149/.npm-global/bin/`
 | 서비스 | 이미지 | 포트 | 메모리 | 역할 |
 |--------|--------|------|--------|------|
 | redis | redis:7-alpine | 6379 | 256MB | Bull Queue 브로커 + 상태 캐시 |
-| stt-server | ./ai-worker (빌드) | 9000 | 3GB | Whisper STT 서버 |
-| ollama | ollama/ollama | - | 4GB | LLM (exaone3.5:2.4b) |
+| stt-server | ./ai-worker (빌드) | 9000 | **4GB** | Whisper STT 서버 (medium 모델) |
+| ollama | ollama/ollama | - | 4GB | LLM Fallback (exaone3.5:2.4b) |
 | backend | ./backend (빌드) | 3000 | 512MB | API + 대시보드 + 워커 |
 | cloudflared | cloudflare/cloudflared | - | 128MB | Cloudflare Tunnel |
 
-**총 메모리**: ~8GB (여유 ~8GB)
+**총 메모리**: ~9GB (여유 ~7GB)
 
 ### Named Volumes
 ```
@@ -401,9 +440,11 @@ AI_PROVIDER=claude node backend/scripts/startWorkerHost.js
 | AI_PROVIDER | ollama | AI 프로바이더 (ollama/claude/gemini/codex) |
 | DISABLE_WORKER | false | 내장 워커 비활성화 |
 | AI_CLI_BIN | /home/sustn7149/.npm-global/bin | CLI 도구 경로 |
-| CLAUDE_MODEL_FAST | haiku | Claude 빠른 모델 |
-| CLAUDE_MODEL_SMART | sonnet | Claude 정확한 모델 |
-| WHISPER_MODEL | small | Whisper 모델 크기 |
+| CLAUDE_MODEL_FAST | haiku | Claude 빠른 모델 (화자 분리용) |
+| CLAUDE_MODEL_SMART | sonnet | Claude 정확한 모델 (통합 분석용) |
+| WHISPER_MODEL | **medium** | Whisper 모델 크기 (Phase 4에서 업그레이드) |
+| WHISPER_INITIAL_PROMPT | (한국어 콜센터 도메인) | STT 도메인 힌트 (Phase 4) |
+| STT_PORT | 9000 | STT 서버 포트 |
 | CLOUDFLARE_TUNNEL_TOKEN | - | Cloudflare 터널 토큰 |
 
 ---
@@ -436,3 +477,65 @@ AI_PROVIDER=claude node backend/scripts/startWorkerHost.js
 | analysis-progress | Server→Client | { jobId, progress } | 분석 진행률 |
 | analysis-complete | Server→Client | { jobId, result } | 분석 완료 |
 | analysis-failed | Server→Client | { jobId, error } | 분석 실패 |
+
+---
+
+## 15. AI 고도화 변경 이력 (Phase 1~4)
+
+### Phase 1: 네이티브 CLI 기반 AI 서비스 도입
+- **커밋**: `c6d674a`, `cfceca9`
+- **변경 파일**: `backend/services/aiCliService.js` (신규), `backend/workers/analysisWorker.js`, `backend/scripts/startWorkerHost.js` (신규)
+- **핵심 변경**:
+  - `child_process.spawn` + stdin 파이프로 Claude/Gemini/Codex CLI 호출
+  - Shell Injection 위험 제거 (spawn은 shell을 거치지 않음)
+  - `AI_PROVIDER` 환경변수로 프로바이더 선택 (claude/gemini/codex/ollama)
+  - 실패 시 자동 Ollama Fallback
+  - 호스트 워커 아키텍처: Docker 백엔드 + 호스트 분석 워커 분리
+
+### Phase 2: 파이프라인 최적화 (5회 → 2회 호출)
+- **커밋**: `15db877`
+- **변경 파일**: `backend/services/aiCliService.js`
+- **핵심 변경**:
+  - LLM 호출 5회 → 2회로 60% 감소
+  - Call 1: 화자 분리 (Claude haiku, 텍스트 응답)
+  - Call 2: 통합 분석 (Claude sonnet, `--json-schema` + `--output-format json`)
+  - `callClaudeStructured()` 함수 신규 — `structured_output` 필드 자동 파싱
+  - `UNIFIED_ANALYSIS_SCHEMA` 정의 — 요약/감정/점수/고객명/결과를 JSON 한 번에
+  - 정규식 파싱 완전 제거 (JSON Schema 강제로 형식 불일치 0%)
+  - Non-Claude provider는 Phase 1 방식(5회 호출) 자동 유지
+
+### Phase 3: 프롬프트 엔지니어링 고도화
+- **커밋**: `1d4ae96`
+- **변경 파일**: `backend/services/aiCliService.js`
+- **핵심 변경**:
+  - **화자 분리 프롬프트**: 역할 부여("화자 분리 전문가") + 화자 판별 기준 + Few-shot 예시 3개
+  - **통합 분석 프롬프트**: Chain-of-Thought 4단계 사고 절차 적용
+  - **점수 루브릭**: 5단계 (탁월 9~10 / 우수 7~8 / 보통 5~6 / 미흡 3~4 / 심각 1~2)
+  - **결과 판정**: `buildOutcomeContext()` — 팀별(영업/CS/일반) 세분화 기준, CoT 판정 절차
+  - **요약 구조**: "주어 + 핵심 내용" 형식, 목적→내용→결론 흐름
+  - **고객명 추출**: 패턴 예시("OOO 고객님→OOO"), 제외 규칙(상담원 이름, 회사명)
+
+### Phase 4: STT 품질 개선
+- **커밋**: `745bdfa`, `23e5744`
+- **변경 파일**: `ai-worker/stt_server.py`, `docker-compose.yml`, `backend/services/whisperService.js`
+- **핵심 변경**:
+  - Whisper 모델 `small` → `medium` 업그레이드 (~461MB → ~1.5GB)
+  - 한국어 콜센터 Initial Prompt 추가 (도메인 단어 34개)
+  - 전사 파라미터 최적화: `best_of=3`, `condition_on_previous_text=True`, VAD 강화
+  - 환각 필터링: `compression_ratio_threshold=2.4`, `log_prob_threshold=-1.0`
+  - Docker STT 메모리 3GB → 4GB
+  - STT HTTP 타임아웃 5분 → 10분 (대용량 파일 대응)
+
+### E2E 테스트 결과 비교
+
+| 항목 | 변경 전 (Ollama + small) | 변경 후 (Claude + medium) | 개선 |
+|------|-------------------------|--------------------------|------|
+| STT 모델 | small (~461MB) | medium (~1.5GB) | 정확도 향상 |
+| STT 텍스트량 | 755자 | 835자 (+10.6%) | 더 많은 정보 |
+| STT 구두점 | 없음 | 자동 삽입 (쉼표, 물음표) | 가독성 향상 |
+| STT 인식 예시 | "국민편 신청자" (오인식) | "국민펀드 신청서" (정확) | 핵심 단어 정확 |
+| LLM 호출 | 5회 (Ollama) | 2회 (Claude haiku+sonnet) | 60% 감소 |
+| 응답 형식 | 정규식 파싱 | JSON Schema 강제 | 파싱 오류 0% |
+| 요약 품질 | 단순 나열 | 목적→내용→결론 구조 | 구조화 |
+| 점수 기준 | 모호 | 5-Level 루브릭 | 일관성 확보 |
+| 결과 판정 | 일반적 | 팀별(영업/CS) 세분화 | 도메인 맞춤 |
