@@ -10,6 +10,9 @@ RUN npm run build
 # ===== Stage 2: Backend 서버 =====
 FROM node:20-alpine
 
+# ffprobe: 녹음파일 실제 길이 측정용
+RUN apk add --no-cache ffmpeg
+
 WORKDIR /app
 
 COPY backend/package*.json ./

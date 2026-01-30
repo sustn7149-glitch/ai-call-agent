@@ -85,13 +85,23 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     // Auto-match team from agents table
     const teamName = userPhone ? db.getAgentTeam(userPhone) : null;
 
+    // duration 검증: 메타데이터가 0이면 ffprobe로 실제 녹음 길이 측정
+    let actualDuration = parseInt(duration) || 0;
+    if (actualDuration === 0 && file.path) {
+      const probeDur = db.getRecordingDuration(file.path);
+      if (probeDur > 0) {
+        console.log(`[Upload] Duration corrected via ffprobe: ${duration}s → ${probeDur}s`);
+        actualDuration = probeDur;
+      }
+    }
+
     const uploadData = {
       phoneNumber: phoneNumber || '',
       filePath: file.path,
       uploaderName: userName,
       uploaderPhone: userPhone,
       callType: callType || 'INCOMING',
-      duration: duration || 0,
+      duration: actualDuration,
       contactName: contactName || null,
       teamName: teamName || null,
       startTime: startTime || null

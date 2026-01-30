@@ -1,6 +1,7 @@
 const initSqlJs = require("sql.js");
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("child_process");
 
 const dbPath = process.env.DB_PATH || path.join(__dirname, "../../database.sqlite");
 
@@ -10,6 +11,21 @@ let db = null;
 const normalizePhone = (phone) => {
   if (!phone) return phone;
   return phone.replace(/^\+82/, '0');
+};
+
+// ffprobe로 녹음파일 실제 길이(초) 측정
+const getRecordingDuration = (filePath) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return 0;
+    const output = execSync(
+      `ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${filePath}"`,
+      { timeout: 10000 }
+    ).toString().trim();
+    const dur = Math.round(parseFloat(output));
+    return isNaN(dur) ? 0 : dur;
+  } catch {
+    return 0;
+  }
 };
 
 const saveDatabase = () => {
@@ -115,6 +131,47 @@ const initDB = async () => {
 
   // Migration: add team_id to agents
   addColumnIfNotExists('agents', 'team_id', 'INTEGER');
+
+  // ===== 백필: calls.team_name을 agents 테이블에서 매칭 =====
+  try {
+    const backfillResult = db.run(
+      `UPDATE calls SET team_name = (
+        SELECT a.team_name FROM agents a
+        WHERE a.phone_number = REPLACE(calls.uploader_phone, '+82', '0')
+        AND a.team_name IS NOT NULL
+      ) WHERE team_name IS NULL AND uploader_phone IS NOT NULL`
+    );
+    const teamBackfilled = db.getRowsModified();
+    if (teamBackfilled > 0) {
+      console.log(`[Migration] Backfilled team_name for ${teamBackfilled} calls`);
+    }
+  } catch (e) {
+    console.error('[Migration] team_name backfill error:', e.message);
+  }
+
+  // ===== 백필: duration=0인데 녹음파일 있는 경우 ffprobe로 실제 길이 측정 =====
+  try {
+    const zeroDur = db.exec(
+      `SELECT id, recording_path FROM calls
+       WHERE (duration = 0 OR duration IS NULL)
+       AND recording_path IS NOT NULL`
+    );
+    if (zeroDur[0] && zeroDur[0].values.length > 0) {
+      let fixed = 0;
+      for (const [id, recPath] of zeroDur[0].values) {
+        const actualDur = getRecordingDuration(recPath);
+        if (actualDur > 0) {
+          db.run(`UPDATE calls SET duration = ? WHERE id = ?`, [actualDur, id]);
+          fixed++;
+        }
+      }
+      if (fixed > 0) {
+        console.log(`[Migration] Fixed duration for ${fixed}/${zeroDur[0].values.length} calls via ffprobe`);
+      }
+    }
+  } catch (e) {
+    console.error('[Migration] duration backfill error:', e.message);
+  }
 
   saveDatabase();
   console.log("Database initialized");
@@ -244,11 +301,13 @@ module.exports = {
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
         c.uploader_name, c.uploader_phone,
         c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
-        c.team_name, c.start_time, c.outcome,
+        COALESCE(c.team_name, ag.team_name) as team_name,
+        c.start_time, c.outcome,
         a.transcript, a.raw_transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
        LEFT JOIN analysis_results a ON c.id = a.call_id
+       LEFT JOIN agents ag ON ag.phone_number = REPLACE(c.uploader_phone, '+82', '0')
        WHERE c.recording_path IS NOT NULL
        ORDER BY c.created_at DESC`
     );
@@ -320,11 +379,13 @@ module.exports = {
         c.recording_path, c.duration, c.created_at, c.ai_analyzed,
         c.uploader_name, c.uploader_phone,
         c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
-        c.team_name, c.start_time, c.outcome,
+        COALESCE(c.team_name, ag.team_name) as team_name,
+        c.start_time, c.outcome,
         a.transcript, a.raw_transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
        LEFT JOIN analysis_results a ON c.id = a.call_id
+       LEFT JOIN agents ag ON ag.phone_number = REPLACE(c.uploader_phone, '+82', '0')
        WHERE c.id = ?`,
       [callId]
     );
@@ -456,17 +517,18 @@ module.exports = {
 
     const result = db.exec(
       `SELECT
-        uploader_name,
-        uploader_phone,
-        team_name,
+        c.uploader_name,
+        c.uploader_phone,
+        COALESCE(c.team_name, a.team_name) as team_name,
         COUNT(*) as total_calls,
-        SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END) as outgoing_calls,
-        SUM(CASE WHEN direction = 'IN' AND duration > 0 THEN 1 ELSE 0 END) as incoming_calls,
-        SUM(CASE WHEN direction = 'IN' AND (duration = 0 OR duration IS NULL) THEN 1 ELSE 0 END) as missed_calls,
-        COALESCE(SUM(duration), 0) as total_duration
-       FROM calls
-       WHERE date(COALESCE(start_time, created_at)) = date(?) AND uploader_name IS NOT NULL AND recording_path IS NOT NULL
-       GROUP BY uploader_phone
+        SUM(CASE WHEN c.direction = 'OUT' THEN 1 ELSE 0 END) as outgoing_calls,
+        SUM(CASE WHEN c.direction = 'IN' AND c.duration > 0 THEN 1 ELSE 0 END) as incoming_calls,
+        SUM(CASE WHEN c.direction = 'IN' AND (c.duration = 0 OR c.duration IS NULL) THEN 1 ELSE 0 END) as missed_calls,
+        COALESCE(SUM(c.duration), 0) as total_duration
+       FROM calls c
+       LEFT JOIN agents a ON a.phone_number = REPLACE(c.uploader_phone, '+82', '0')
+       WHERE date(COALESCE(c.start_time, c.created_at)) = date(?) AND c.uploader_name IS NOT NULL AND c.recording_path IS NOT NULL
+       GROUP BY c.uploader_phone
        ORDER BY total_calls DESC`,
       [today]
     );
@@ -480,19 +542,20 @@ module.exports = {
 
     const result = db.exec(
       `SELECT
-        uploader_name,
-        uploader_phone,
-        COALESCE(team_name, '미지정') as team_name,
-        COALESCE(SUM(duration), 0) as total_duration,
+        c.uploader_name,
+        c.uploader_phone,
+        COALESCE(c.team_name, a.team_name, '미지정') as team_name,
+        COALESCE(SUM(c.duration), 0) as total_duration,
         COUNT(*) as total_calls,
-        SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
-        SUM(CASE WHEN direction = 'IN' AND duration > 0 THEN 1 ELSE 0 END) as incoming,
-        SUM(CASE WHEN direction = 'IN' AND (duration = 0 OR duration IS NULL) THEN 1 ELSE 0 END) as missed,
-        ROUND(AVG(CASE WHEN ai_score IS NOT NULL AND ai_score > 0 THEN ai_score ELSE NULL END), 1) as avg_score
-       FROM calls
-       WHERE date(created_at) >= date(?) AND date(created_at) <= date(?)
-         AND uploader_name IS NOT NULL
-       GROUP BY uploader_phone
+        SUM(CASE WHEN c.direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
+        SUM(CASE WHEN c.direction = 'IN' AND c.duration > 0 THEN 1 ELSE 0 END) as incoming,
+        SUM(CASE WHEN c.direction = 'IN' AND (c.duration = 0 OR c.duration IS NULL) THEN 1 ELSE 0 END) as missed,
+        ROUND(AVG(CASE WHEN c.ai_score IS NOT NULL AND c.ai_score > 0 THEN c.ai_score ELSE NULL END), 1) as avg_score
+       FROM calls c
+       LEFT JOIN agents a ON a.phone_number = REPLACE(c.uploader_phone, '+82', '0')
+       WHERE date(COALESCE(c.start_time, c.created_at)) >= date(?) AND date(COALESCE(c.start_time, c.created_at)) <= date(?)
+         AND c.uploader_name IS NOT NULL AND c.recording_path IS NOT NULL
+       GROUP BY c.uploader_phone
        ORDER BY avg_score DESC`,
       [startDate, endDate]
     );
@@ -657,10 +720,11 @@ module.exports = {
   getTeamAnalytics: () => {
     if (!db) return [];
     const result = db.exec(
-      `SELECT COALESCE(team_name, '미지정') as team, COUNT(*) as count
-       FROM calls
-       WHERE recording_path IS NOT NULL
-       GROUP BY team_name
+      `SELECT COALESCE(c.team_name, a.team_name, '미지정') as team, COUNT(*) as count
+       FROM calls c
+       LEFT JOIN agents a ON a.phone_number = REPLACE(c.uploader_phone, '+82', '0')
+       WHERE c.recording_path IS NOT NULL
+       GROUP BY team
        ORDER BY count DESC`
     );
     return rowsToObjects(result);
@@ -677,6 +741,9 @@ module.exports = {
     );
     return rowsToObjects(result);
   },
+
+  // ffprobe로 녹음파일 실제 길이 측정 (외부에서 사용 가능)
+  getRecordingDuration: (filePath) => getRecordingDuration(filePath),
 
   // Cleanup: remove rows without recordings (junk from old webhook inserts)
   cleanupJunkRows: () => {
