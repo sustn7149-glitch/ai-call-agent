@@ -41,7 +41,7 @@ services:
     container_name: call-agent-stt
     restart: unless-stopped
     environment:
-      - WHISPER_MODEL=small
+      - WHISPER_MODEL=medium
       - STT_PORT=9000
     ports:
       - "9000:9000"   # 호스트 워커 접근용
@@ -52,7 +52,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
+          memory: 4G
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
       interval: 30s
