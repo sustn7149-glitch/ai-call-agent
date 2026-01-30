@@ -1,53 +1,27 @@
 import { useState, useEffect, useCallback } from 'react'
 
+const TH = 'border border-gray-300 text-[12px] font-bold text-center text-gray-700 px-2 whitespace-nowrap'
+const TD = 'border border-gray-300 text-[12px] text-center text-gray-700 px-2'
+const TH_STYLE = { background: '#ECEBFF', height: '26px' }
+
 const TABS = [
-  { key: 'teams', label: '팀 관리' },
-  { key: 'agents', label: '직원 관리' },
+  { id: 'teams', label: '팀 관리' },
+  { id: 'agents', label: '직원 관리' },
 ]
 
-export default function Settings() {
-  const [tab, setTab] = useState('teams')
-
-  return (
-    <div className="px-4 py-3 space-y-3">
-      {/* Tab Header */}
-      <div className="flex gap-1 border-b border-line">
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === t.key
-                ? 'border-brand text-brand'
-                : 'border-transparent text-ink-tertiary hover:text-ink-secondary'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'teams' && <TeamManagement />}
-      {tab === 'agents' && <AgentManagement />}
-    </div>
-  )
-}
-
-/* ═══════════════════════════════════════════
-   팀 관리 (Team Management)
-   ═══════════════════════════════════════════ */
+/* ═══════════════════════════════ */
+/*         팀 관리 탭              */
+/* ═══════════════════════════════ */
 function TeamManagement() {
   const [teams, setTeams] = useState([])
+  const [newTeam, setNewTeam] = useState({ name: '', evaluation_prompt: '' })
   const [editingId, setEditingId] = useState(null)
-  const [editData, setEditData] = useState({ name: '', description: '', evaluation_prompt: '' })
-  const [newTeam, setNewTeam] = useState({ name: '', description: '', evaluation_prompt: '' })
-  const [showAddForm, setShowAddForm] = useState(false)
+  const [editData, setEditData] = useState({ name: '', evaluation_prompt: '' })
   const [error, setError] = useState('')
 
   const fetchTeams = useCallback(async () => {
     try {
       const res = await fetch('/api/teams')
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setTeams(await res.json())
     } catch (err) {
       console.error('Failed to fetch teams:', err)
@@ -67,27 +41,31 @@ function TeamManagement() {
       })
       if (!res.ok) {
         const data = await res.json()
-        setError(data.error || '팀 생성 실패')
+        setError(data.error || '팀 생성에 실패했습니다.')
         return
       }
-      setNewTeam({ name: '', description: '', evaluation_prompt: '' })
-      setShowAddForm(false)
+      setNewTeam({ name: '', evaluation_prompt: '' })
       fetchTeams()
     } catch (err) {
-      setError('팀 생성 실패')
+      console.error('Failed to add team:', err)
+      setError('팀 생성에 실패했습니다.')
     }
   }
 
   const startEdit = (team) => {
     setEditingId(team.id)
-    setEditData({
-      name: team.name || '',
-      description: team.description || '',
-      evaluation_prompt: team.evaluation_prompt || '',
-    })
+    setEditData({ name: team.name || '', evaluation_prompt: team.evaluation_prompt || '' })
+    setError('')
+  }
+
+  const cancelEdit = () => {
+    setEditingId(null)
+    setEditData({ name: '', evaluation_prompt: '' })
+    setError('')
   }
 
   const saveEdit = async (id) => {
+    if (!editData.name.trim()) return
     setError('')
     try {
       const res = await fetch(`/api/teams/${id}`, {
@@ -97,211 +75,144 @@ function TeamManagement() {
       })
       if (!res.ok) {
         const data = await res.json()
-        setError(data.error || '수정 실패')
+        setError(data.error || '수정에 실패했습니다.')
         return
       }
       setEditingId(null)
       fetchTeams()
     } catch (err) {
-      setError('수정 실패')
+      console.error('Failed to update team:', err)
+      setError('수정에 실패했습니다.')
     }
   }
 
   const handleDelete = async (id, name) => {
-    if (!confirm(`"${name}" 팀을 삭제하시겠습니까?`)) return
-    setError('')
+    if (!confirm(`"${name}" 팀을 삭제하시겠습니까?\n소속 직원의 팀 배정이 해제됩니다.`)) return
     try {
-      const res = await fetch(`/api/teams/${id}`, { method: 'DELETE' })
-      if (!res.ok) {
-        const data = await res.json()
-        setError(data.error || '삭제 실패')
-        return
-      }
+      await fetch(`/api/teams/${id}`, { method: 'DELETE' })
       fetchTeams()
     } catch (err) {
-      setError('삭제 실패')
+      console.error('Failed to delete team:', err)
     }
   }
 
   return (
-    <div className="space-y-3">
-      {/* Header + Add button */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium text-ink">팀 목록</h2>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="px-3 py-1.5 text-xs rounded border border-brand text-brand hover:bg-brand-light transition-colors"
-        >
-          {showAddForm ? '취소' : '+ 새 팀 추가'}
-        </button>
-      </div>
-
-      {error && (
-        <div className="px-3 py-2 text-xs text-negative bg-red-50 border border-red-200 rounded">
-          {error}
+    <div className="space-y-2">
+      {/* 새 팀 등록 폼 */}
+      <div className="border border-gray-300">
+        <div className="px-3 py-1.5" style={{ background: '#ECEBFF' }}>
+          <span className="text-[12px] font-bold text-gray-700">새 팀 등록</span>
         </div>
-      )}
-
-      {/* Add Form */}
-      {showAddForm && (
-        <div className="bg-surface border border-line rounded-lg p-4 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+        <div className="px-3 py-2 bg-white space-y-2">
+          <div className="flex flex-wrap items-end gap-2">
             <div>
-              <label className="block text-xs text-ink-tertiary mb-1">팀 이름 *</label>
-              <input
-                type="text"
-                placeholder="예: 영업팀"
+              <label className="block text-[11px] text-gray-500 mb-0.5">팀 이름</label>
+              <input type="text" placeholder="예: 영업1팀"
                 value={newTeam.name}
                 onChange={e => setNewTeam(p => ({ ...p, name: e.target.value }))}
-                className="w-full border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface focus:border-brand focus:outline-none"
-              />
+                className="border border-gray-300 px-2 py-1 text-[12px] text-gray-700 bg-white w-44" />
             </div>
-            <div>
-              <label className="block text-xs text-ink-tertiary mb-1">설명</label>
-              <input
-                type="text"
-                placeholder="팀 설명 (선택)"
-                value={newTeam.description}
-                onChange={e => setNewTeam(p => ({ ...p, description: e.target.value }))}
-                className="w-full border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface focus:border-brand focus:outline-none"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs text-ink-tertiary mb-1">AI 평가 기준 (System Prompt)</label>
-            <textarea
-              rows={4}
-              placeholder="이 팀의 통화를 AI가 평가할 때 사용할 기준을 입력하세요.&#10;예: 고객에게 상품 가입을 적극 권유하고 성공했는지 평가하라."
-              value={newTeam.evaluation_prompt}
-              onChange={e => setNewTeam(p => ({ ...p, evaluation_prompt: e.target.value }))}
-              className="w-full border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface focus:border-brand focus:outline-none resize-y"
-            />
-            <p className="text-[10px] text-ink-tertiary mt-1">비워두면 기본 평가 기준이 적용됩니다.</p>
-          </div>
-          <div className="flex justify-end">
-            <button
-              onClick={handleAdd}
-              className="px-4 py-1.5 bg-brand text-white text-sm rounded hover:opacity-90 transition-opacity"
-            >
-              팀 생성
+            <button onClick={handleAdd}
+              className="bg-blue-600 text-white px-3 py-1 text-[11px] hover:bg-blue-700">
+              팀 추가
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Team List */}
-      <div className="space-y-2">
-        {teams.length === 0 ? (
-          <div className="bg-surface border border-line rounded-lg py-8 text-center">
-            <p className="text-sm text-ink-tertiary">등록된 팀이 없습니다</p>
-            <p className="text-xs text-ink-tertiary mt-1">'+ 새 팀 추가' 버튼을 눌러 팀을 만들어주세요</p>
+          <div>
+            <label className="block text-[11px] text-gray-500 mb-0.5">AI 평가 기준 (프롬프트)</label>
+            <textarea placeholder="이 팀의 통화를 평가할 때 사용할 AI 프롬프트를 입력하세요."
+              value={newTeam.evaluation_prompt}
+              onChange={e => setNewTeam(p => ({ ...p, evaluation_prompt: e.target.value }))}
+              rows={2}
+              className="border border-gray-300 px-2 py-1 text-[12px] text-gray-700 bg-white w-full resize-y" />
           </div>
-        ) : (
-          teams.map(team => {
-            const isEditing = editingId === team.id
-            return (
-              <div key={team.id} className="bg-surface border border-line rounded-lg overflow-hidden">
-                {isEditing ? (
-                  /* Edit mode */
-                  <div className="p-4 space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs text-ink-tertiary mb-1">팀 이름</label>
-                        <input
-                          type="text"
-                          value={editData.name}
+          {error && <p className="text-[11px] text-red-600">{error}</p>}
+        </div>
+      </div>
+
+      {/* 팀 목록 테이블 */}
+      <div className="border border-gray-300">
+        <div className="px-3 py-1.5 flex items-center justify-between" style={{ background: '#ECEBFF' }}>
+          <span className="text-[12px] font-bold text-gray-700">등록된 팀</span>
+          <span className="text-[11px] text-gray-500">{teams.length}개</span>
+        </div>
+        <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th className={TH} style={TH_STYLE}>ID</th>
+              <th className={TH} style={TH_STYLE}>팀 이름</th>
+              <th className={TH} style={{ ...TH_STYLE, minWidth: '200px' }}>AI 평가 기준</th>
+              <th className={TH} style={TH_STYLE}>등록일</th>
+              <th className={TH} style={TH_STYLE}>관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            {teams.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="border border-gray-300 text-center text-[12px] text-gray-400 py-6">
+                  등록된 팀이 없습니다
+                </td>
+              </tr>
+            ) : (
+              teams.map(team => {
+                const isEditing = editingId === team.id
+                return (
+                  <tr key={team.id} style={{ height: '28px' }}>
+                    <td className={`${TD} text-gray-500`}>{team.id}</td>
+                    <td className={`${TD} font-medium`}>
+                      {isEditing ? (
+                        <input type="text" value={editData.name}
                           onChange={e => setEditData(p => ({ ...p, name: e.target.value }))}
-                          className="w-full border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface-page focus:border-brand focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-ink-tertiary mb-1">설명</label>
-                        <input
-                          type="text"
-                          value={editData.description}
-                          onChange={e => setEditData(p => ({ ...p, description: e.target.value }))}
-                          className="w-full border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface-page focus:border-brand focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-xs text-ink-tertiary mb-1">AI 평가 기준 (System Prompt)</label>
-                      <textarea
-                        rows={4}
-                        value={editData.evaluation_prompt}
-                        onChange={e => setEditData(p => ({ ...p, evaluation_prompt: e.target.value }))}
-                        className="w-full border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface-page focus:border-brand focus:outline-none resize-y"
-                      />
-                    </div>
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => setEditingId(null)}
-                        className="px-3 py-1.5 text-xs text-ink-tertiary border border-line rounded hover:bg-surface-panel transition-colors"
-                      >
-                        취소
-                      </button>
-                      <button
-                        onClick={() => saveEdit(team.id)}
-                        className="px-3 py-1.5 text-xs text-white bg-brand rounded hover:opacity-90 transition-opacity"
-                      >
-                        저장
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  /* View mode */
-                  <div className="px-4 py-3">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-ink">{team.name}</span>
-                          {team.description && (
-                            <span className="text-xs text-ink-tertiary">- {team.description}</span>
-                          )}
+                          className="border border-gray-300 px-1.5 py-0.5 text-[12px] text-gray-700 w-32" />
+                      ) : team.name}
+                    </td>
+                    <td className={`${TD} text-left text-gray-500 max-w-[300px] truncate`}
+                      title={team.evaluation_prompt || ''}>
+                      {isEditing ? (
+                        <textarea value={editData.evaluation_prompt}
+                          onChange={e => setEditData(p => ({ ...p, evaluation_prompt: e.target.value }))}
+                          rows={2}
+                          className="border border-gray-300 px-1.5 py-0.5 text-[12px] text-gray-700 w-full resize-y" />
+                      ) : (team.evaluation_prompt || '-')}
+                    </td>
+                    <td className={`${TD} text-gray-500 whitespace-nowrap`}>
+                      {team.created_at ? new Date(team.created_at).toLocaleDateString('ko-KR') : '-'}
+                    </td>
+                    <td className="border border-gray-300 text-center px-2">
+                      {isEditing ? (
+                        <div className="flex gap-1 justify-center">
+                          <button onClick={() => saveEdit(team.id)}
+                            className="bg-green-600 text-white px-2 py-0.5 text-[11px] hover:bg-green-700">저장</button>
+                          <button onClick={cancelEdit}
+                            className="bg-gray-400 text-white px-2 py-0.5 text-[11px] hover:bg-gray-500">취소</button>
                         </div>
-                        {team.evaluation_prompt ? (
-                          <p className="text-xs text-ink-secondary mt-1.5 line-clamp-2 whitespace-pre-wrap">
-                            {team.evaluation_prompt}
-                          </p>
-                        ) : (
-                          <p className="text-xs text-ink-tertiary mt-1.5">기본 평가 기준 사용</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 ml-3 shrink-0">
-                        <button
-                          onClick={() => startEdit(team)}
-                          className="text-xs text-brand font-medium hover:underline"
-                        >
-                          수정
-                        </button>
-                        <button
-                          onClick={() => handleDelete(team.id, team.name)}
-                          className="text-xs text-negative font-medium hover:underline"
-                        >
-                          삭제
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
-          })
-        )}
+                      ) : (
+                        <div className="flex gap-1 justify-center">
+                          <button onClick={() => startEdit(team)}
+                            className="bg-blue-600 text-white px-2 py-0.5 text-[11px] hover:bg-blue-700">수정</button>
+                          <button onClick={() => handleDelete(team.id, team.name)}
+                            className="bg-red-600 text-white px-2 py-0.5 text-[11px] hover:bg-red-700">삭제</button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   )
 }
 
-/* ═══════════════════════════════════════════
-   직원 관리 (Agent Management)
-   ═══════════════════════════════════════════ */
+/* ═══════════════════════════════ */
+/*         직원 관리 탭            */
+/* ═══════════════════════════════ */
 function AgentManagement() {
   const [agents, setAgents] = useState([])
   const [teams, setTeams] = useState([])
-  const [editingPhone, setEditingPhone] = useState(null)
-  const [editData, setEditData] = useState({ name: '', team_name: '' })
-  const [newAgent, setNewAgent] = useState({ phone_number: '', name: '', team_name: '' })
+  const [newAgent, setNewAgent] = useState({ phone_number: '', name: '', team_id: '' })
+  const [savingTeam, setSavingTeam] = useState(null)
 
   const fetchData = useCallback(async () => {
     try {
@@ -318,188 +229,209 @@ function AgentManagement() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
+  const getTeamName = (teamId) => {
+    if (!teamId) return null
+    const team = teams.find(t => t.id === teamId)
+    return team ? team.name : null
+  }
+
   const handleAdd = async () => {
     if (!newAgent.phone_number.trim()) return
     try {
-      const res = await fetch('/api/agents', {
+      const teamId = newAgent.team_id ? parseInt(newAgent.team_id) : null
+      const teamName = teamId ? getTeamName(teamId) : null
+      await fetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newAgent),
+        body: JSON.stringify({
+          phone_number: newAgent.phone_number,
+          name: newAgent.name,
+          team_id: teamId,
+          team_name: teamName,
+        }),
       })
-      if (!res.ok) {
-        console.error('Failed to add agent:', res.status)
-        return
-      }
-      setNewAgent({ phone_number: '', name: '', team_name: '' })
+      setNewAgent({ phone_number: '', name: '', team_id: '' })
       fetchData()
     } catch (err) {
       console.error('Failed to add agent:', err)
     }
   }
 
-  const startEdit = (agent) => {
-    setEditingPhone(agent.phone_number)
-    setEditData({ name: agent.name || '', team_name: agent.team_name || '' })
-  }
-
-  const cancelEdit = () => {
-    setEditingPhone(null)
-    setEditData({ name: '', team_name: '' })
-  }
-
-  const saveEdit = async (phone) => {
+  const handleTeamChange = async (agent, newTeamId) => {
+    const teamId = newTeamId ? parseInt(newTeamId) : null
+    const teamName = teamId ? getTeamName(teamId) : null
+    setSavingTeam(agent.phone_number)
+    setAgents(prev => prev.map(a =>
+      a.phone_number === agent.phone_number
+        ? { ...a, team_id: teamId, team_name: teamName, resolved_team_name: teamName }
+        : a
+    ))
     try {
-      const res = await fetch(`/api/agents/${encodeURIComponent(phone)}`, {
+      await fetch(`/api/agents/${encodeURIComponent(agent.phone_number)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editData),
+        body: JSON.stringify({
+          name: agent.name,
+          team_id: teamId,
+          team_name: teamName,
+        }),
       })
-      if (!res.ok) {
-        console.error('Failed to update agent:', res.status)
-        return
-      }
-      setEditingPhone(null)
+    } catch (err) {
+      console.error('Failed to update team:', err)
+      fetchData()
+    } finally {
+      setSavingTeam(null)
+    }
+  }
+
+  const handleDelete = async (phone, name) => {
+    if (!confirm(`"${name || phone}" 직원을 삭제하시겠습니까?`)) return
+    try {
+      await fetch(`/api/agents/${encodeURIComponent(phone)}`, { method: 'DELETE' })
       fetchData()
     } catch (err) {
-      console.error('Failed to update agent:', err)
+      console.error('Failed to delete agent:', err)
     }
   }
 
   return (
-    <div className="space-y-3">
-      <div className="bg-surface border border-line rounded-lg overflow-hidden">
-        {/* Add Form */}
-        <div className="px-4 py-3 border-b border-line-light bg-surface-panel flex flex-wrap items-end gap-3">
+    <div className="space-y-2">
+      {/* 새 직원 등록 폼 */}
+      <div className="border border-gray-300">
+        <div className="px-3 py-1.5" style={{ background: '#ECEBFF' }}>
+          <span className="text-[12px] font-bold text-gray-700">새 직원 수동 등록</span>
+          <span className="text-[10px] text-gray-500 ml-2">앱에서 가입한 직원은 자동으로 아래 목록에 표시됩니다.</span>
+        </div>
+        <div className="px-3 py-2 bg-white flex flex-wrap items-end gap-2">
           <div>
-            <label className="block text-xs text-ink-tertiary mb-1">전화번호</label>
-            <input
-              type="text"
-              placeholder="01012345678"
+            <label className="block text-[11px] text-gray-500 mb-0.5">전화번호</label>
+            <input type="text" placeholder="01012345678"
               value={newAgent.phone_number}
               onChange={e => setNewAgent(p => ({ ...p, phone_number: e.target.value }))}
-              className="border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface w-40 focus:border-brand focus:outline-none"
-            />
+              className="border border-gray-300 px-2 py-1 text-[12px] text-gray-700 bg-white w-36" />
           </div>
           <div>
-            <label className="block text-xs text-ink-tertiary mb-1">이름</label>
-            <input
-              type="text"
-              placeholder="홍길동"
+            <label className="block text-[11px] text-gray-500 mb-0.5">이름</label>
+            <input type="text" placeholder="홍길동"
               value={newAgent.name}
               onChange={e => setNewAgent(p => ({ ...p, name: e.target.value }))}
-              className="border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface w-32 focus:border-brand focus:outline-none"
-            />
+              className="border border-gray-300 px-2 py-1 text-[12px] text-gray-700 bg-white w-28" />
           </div>
           <div>
-            <label className="block text-xs text-ink-tertiary mb-1">팀</label>
-            <select
-              value={newAgent.team_name}
-              onChange={e => setNewAgent(p => ({ ...p, team_name: e.target.value }))}
-              className="border border-line rounded px-2.5 py-1.5 text-sm text-ink bg-surface w-32"
-            >
-              <option value="">선택</option>
-              {teams.map(t => (
-                <option key={t.id} value={t.name}>{t.name}</option>
-              ))}
+            <label className="block text-[11px] text-gray-500 mb-0.5">소속 팀</label>
+            <select value={newAgent.team_id}
+              onChange={e => setNewAgent(p => ({ ...p, team_id: e.target.value }))}
+              className="border border-gray-300 px-2 py-1 text-[12px] text-gray-700 bg-white w-36">
+              <option value="">팀 미지정</option>
+              {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
           </div>
-          <button
-            onClick={handleAdd}
-            className="px-4 py-1.5 bg-brand text-white text-sm rounded hover:opacity-90 transition-opacity"
-          >
-            추가
+          <button onClick={handleAdd}
+            className="bg-blue-600 text-white px-3 py-1 text-[11px] hover:bg-blue-700">
+            등록
           </button>
         </div>
-
-        {/* Agent Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-line bg-surface-panel">
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-ink-tertiary">전화번호</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-ink-tertiary">이름</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-ink-tertiary">소속 팀</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-ink-tertiary">등록일</th>
-                <th className="px-4 py-2.5 w-24"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-ink-tertiary">
-                    등록된 직원이 없습니다
-                  </td>
-                </tr>
-              ) : (
-                agents.map((agent) => {
-                  const isEditing = editingPhone === agent.phone_number
-                  return (
-                    <tr key={agent.phone_number} className="border-b border-line-light last:border-b-0 hover:bg-surface-panel transition-colors">
-                      <td className="px-4 py-2.5 text-sm text-ink font-mono">{agent.phone_number}</td>
-                      <td className="px-4 py-2.5 text-sm text-ink">
-                        {isEditing ? (
-                          <input
-                            type="text"
-                            value={editData.name}
-                            onChange={e => setEditData(p => ({ ...p, name: e.target.value }))}
-                            className="border border-line rounded px-2 py-1 text-sm text-ink bg-surface-page w-28 focus:border-brand focus:outline-none"
-                          />
-                        ) : (
-                          agent.name || '-'
-                        )}
-                      </td>
-                      <td className="px-4 py-2.5 text-sm text-ink">
-                        {isEditing ? (
-                          <select
-                            value={editData.team_name}
-                            onChange={e => setEditData(p => ({ ...p, team_name: e.target.value }))}
-                            className="border border-line rounded px-2 py-1 text-sm text-ink bg-surface-page w-28"
-                          >
-                            <option value="">선택</option>
-                            {teams.map(t => (
-                              <option key={t.id} value={t.name}>{t.name}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          agent.team_name || '-'
-                        )}
-                      </td>
-                      <td className="px-4 py-2.5 text-sm text-ink-tertiary whitespace-nowrap">
-                        {agent.created_at ? new Date(agent.created_at).toLocaleDateString('ko-KR') : '-'}
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
-                        {isEditing ? (
-                          <div className="flex gap-2 justify-end">
-                            <button
-                              onClick={() => saveEdit(agent.phone_number)}
-                              className="text-xs text-positive font-medium hover:underline"
-                            >
-                              저장
-                            </button>
-                            <button
-                              onClick={cancelEdit}
-                              className="text-xs text-ink-tertiary hover:underline"
-                            >
-                              취소
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => startEdit(agent)}
-                            className="text-xs text-brand font-medium hover:underline"
-                          >
-                            수정
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
       </div>
+
+      {/* 직원 목록 테이블 */}
+      <div className="border border-gray-300">
+        <div className="px-3 py-1.5 flex items-center justify-between" style={{ background: '#ECEBFF' }}>
+          <span className="text-[12px] font-bold text-gray-700">등록된 직원</span>
+          <span className="text-[11px] text-gray-500">{agents.length}명 | 소속 팀 변경 시 즉시 저장</span>
+        </div>
+        <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th className={TH} style={TH_STYLE}>No.</th>
+              <th className={TH} style={TH_STYLE}>전화번호</th>
+              <th className={TH} style={TH_STYLE}>이름</th>
+              <th className={TH} style={TH_STYLE}>소속 팀</th>
+              <th className={TH} style={TH_STYLE}>가입일</th>
+              <th className={TH} style={TH_STYLE}>관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            {agents.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="border border-gray-300 text-center text-[12px] text-gray-400 py-6">
+                  등록된 직원이 없습니다
+                </td>
+              </tr>
+            ) : (
+              agents.map((agent, idx) => {
+                const currentTeamId = agent.team_id != null ? String(agent.team_id) : ''
+                const isSaving = savingTeam === agent.phone_number
+                return (
+                  <tr key={agent.phone_number}
+                    className={!agent.team_id ? 'bg-amber-50' : ''}
+                    style={{ height: '28px' }}>
+                    <td className={`${TD} text-gray-500`}>{idx + 1}</td>
+                    <td className={`${TD} font-mono`}>{agent.phone_number}</td>
+                    <td className={`${TD} font-medium`}>
+                      {agent.name || <span className="text-gray-400 italic">이름 없음</span>}
+                    </td>
+                    <td className="border border-gray-300 text-center px-2">
+                      <div className="flex items-center justify-center gap-1">
+                        <select value={currentTeamId}
+                          onChange={e => handleTeamChange(agent, e.target.value)}
+                          disabled={isSaving}
+                          className={`border px-1.5 py-0.5 text-[12px] w-32 ${
+                            !agent.team_id
+                              ? 'border-amber-300 bg-amber-50 text-amber-700'
+                              : 'border-gray-300 bg-white text-gray-700'
+                          } ${isSaving ? 'opacity-50' : ''}`}>
+                          <option value="">팀 미지정</option>
+                          {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        </select>
+                        {isSaving && <span className="text-[10px] text-gray-400">저장중...</span>}
+                      </div>
+                    </td>
+                    <td className={`${TD} text-gray-500 whitespace-nowrap`}>
+                      {agent.created_at ? new Date(agent.created_at).toLocaleDateString('ko-KR') : '-'}
+                    </td>
+                    <td className="border border-gray-300 text-center px-2">
+                      <button onClick={() => handleDelete(agent.phone_number, agent.name)}
+                        className="bg-red-600 text-white px-2 py-0.5 text-[11px] hover:bg-red-700">
+                        삭제
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════ */
+/*         메인 Settings           */
+/* ═══════════════════════════════ */
+export default function Settings() {
+  const [activeTab, setActiveTab] = useState('teams')
+
+  return (
+    <div className="px-3 py-3" style={{ fontFamily: 'Pretendard, -apple-system, sans-serif' }}>
+
+      {/* ── 탭 바 ── */}
+      <div className="flex items-center gap-0 mb-2 border border-gray-300">
+        {TABS.map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-1.5 text-[12px] font-bold border-r border-gray-300 last:border-r-0 transition-colors ${
+              activeTab === tab.id
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+            }`}>
+            {tab.label}
+          </button>
+        ))}
+        <div className="flex-1 bg-gray-50" style={{ height: '30px' }} />
+      </div>
+
+      {activeTab === 'teams' && <TeamManagement />}
+      {activeTab === 'agents' && <AgentManagement />}
     </div>
   )
 }

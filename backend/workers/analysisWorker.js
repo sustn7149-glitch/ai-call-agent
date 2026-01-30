@@ -5,6 +5,10 @@ const databaseService = require("../services/databaseService");
 
 const CONCURRENCY = 1;
 
+// Minimum thresholds for AI evaluation
+const MIN_DURATION_SECONDS = 30;
+const MIN_TRANSCRIPT_LENGTH = 50;
+
 async function processAnalysisJob(job) {
   try {
     const { filePath, fileName, phoneNumber, callId, recordingId } = job.data;
@@ -16,6 +20,8 @@ async function processAnalysisJob(job) {
 
     // Find call ID
     let finalCallId = callId;
+    let callDuration = 0;
+    let uploaderPhone = null;
     if (!finalCallId) {
       const allCalls = databaseService.getAllCalls();
       const matchingCall = allCalls.find((callRow) => {
@@ -29,49 +35,56 @@ async function processAnalysisJob(job) {
 
       if (matchingCall) {
         finalCallId = matchingCall[0];
+        callDuration = matchingCall[6] || 0;
+        uploaderPhone = matchingCall[10] || null; // uploader_phone index
       } else {
         throw new Error(`통화 기록을 찾을 수 없습니다: ${phoneNumber} / ${filePath}`);
+      }
+    } else {
+      const callData = databaseService.getCallWithAnalysis(finalCallId);
+      if (callData) {
+        callDuration = callData.duration || 0;
+        uploaderPhone = callData.uploader_phone || null;
       }
     }
 
     // Update status to processing
     databaseService.updateAiStatus(finalCallId, 'processing');
 
-    // Look up team for team-specific evaluation
-    const teamName = databaseService.getCallTeam(finalCallId);
-    const customPrompt = databaseService.getTeamEvaluationPrompt(teamName);
-    console.log(`[Worker] Call #${finalCallId} team: ${teamName || 'default'}, customPrompt: ${customPrompt ? 'yes' : 'no'}`);
-
-    // Check call duration (from DB)
-    const callRecord = databaseService.getCallWithAnalysis(finalCallId);
-    const callDuration = callRecord ? (callRecord.duration || 0) : 0;
-
     // Step 1: Whisper STT
     console.log(`[Worker] STT starting...`);
-    const { text: rawText, duration: sttDuration } =
+    const { text: transcribedText, duration: sttDuration } =
       await whisperService.transcribe(filePath);
 
-    console.log(`[Worker] STT complete: ${rawText.length} chars (${sttDuration}s)`);
+    console.log(`[Worker] STT complete: ${transcribedText.length} chars (${sttDuration}s)`);
     await job.progress(50);
 
-    // Step 2: Skip AI evaluation if (duration is known and < 30s) or STT text < 50 chars
-    const skipAi = (callDuration > 0 && callDuration < 30) || rawText.length < 50;
-    if (skipAi) {
-      console.log(`[Worker] AI evaluation SKIPPED: duration=${callDuration}s, textLen=${rawText.length} (min: 30s / 50chars)`);
+    // ===== Check minimum thresholds for AI evaluation =====
+    const durationTooShort = callDuration < MIN_DURATION_SECONDS;
+    const textTooShort = transcribedText.length < MIN_TRANSCRIPT_LENGTH;
+    const skipAiEvaluation = durationTooShort || textTooShort;
+
+    if (skipAiEvaluation) {
+      console.log(`[Worker] Skipping AI evaluation: duration=${callDuration}s (min ${MIN_DURATION_SECONDS}s), text=${transcribedText.length} chars (min ${MIN_TRANSCRIPT_LENGTH})`);
 
       const dbResults = {
-        transcript: rawText,
-        summary: '통화 시간이 짧거나 인식된 텍스트가 부족하여 AI 평가를 생략했습니다.',
+        transcript: transcribedText,
+        raw_transcript: transcribedText,
+        summary: durationTooShort && textTooShort
+          ? '통화 시간이 짧고 내용이 부족하여 평가를 생략합니다.'
+          : durationTooShort
+            ? '통화 시간이 30초 미만이어서 평가를 생략합니다.'
+            : 'STT 텍스트가 50자 미만이어서 평가를 생략합니다.',
         sentiment: null,
         sentiment_score: null,
         ai_score: null,
-        checklist: null,
-        raw_transcript: rawText,
-        customer_name: null
+        customer_name: null,
+        outcome: null
       };
+
       databaseService.saveAnalysisResult(finalCallId, dbResults);
 
-      console.log(`[Worker] Job #${job.id} complete (skipped AI, Call ID: ${finalCallId})`);
+      console.log(`[Worker] Job #${job.id} complete (skipped evaluation, Call ID: ${finalCallId})`);
       await job.progress(100);
 
       return {
@@ -79,30 +92,49 @@ async function processAnalysisJob(job) {
         recordingId: recordingId || `call_${finalCallId}`,
         phoneNumber,
         sttDuration,
-        transcriptLength: rawText.length,
+        transcriptLength: transcribedText.length,
         skipped: true,
+        skipReason: durationTooShort ? 'duration_too_short' : 'text_too_short'
       };
     }
 
-    // Step 3: AI Analysis (reformat transcript + team analysis + customer name)
-    console.log(`[Worker] AI analysis starting (team: ${teamName || 'default'})...`);
-    const analysisResults = await ollamaService.analyzeCall(rawText, teamName, customPrompt);
+    // Step 2: Look up team-specific evaluation prompt
+    let teamPrompt = null;
+    let teamName = null;
+    if (uploaderPhone) {
+      const teamId = databaseService.getAgentTeamId(uploaderPhone);
+      if (teamId) {
+        teamPrompt = databaseService.getTeamEvaluationPrompt(teamId);
+        const teamData = databaseService.getTeamById(teamId);
+        teamName = teamData ? teamData.name : null;
+      }
+      if (!teamName) {
+        teamName = databaseService.getAgentTeam(uploaderPhone);
+      }
+    }
+
+    console.log(`[Worker] AI analysis starting... (team: ${teamName || 'N/A'}, custom prompt: ${teamPrompt ? 'YES' : 'NO'})`);
+
+    // Step 3: AI Analysis (conversation format + summary + sentiment + customer name + outcome)
+    const analysisResults = await ollamaService.analyzeCall(transcribedText, teamPrompt, teamName);
 
     console.log(`[Worker] AI complete | summary: ${analysisResults.summary.substring(0, 80)}...`);
     console.log(`[Worker] Emotion: ${analysisResults.sentiment.sentiment} (${analysisResults.sentiment.score}/10)`);
     console.log(`[Worker] Customer name (AI): ${analysisResults.customerName || 'N/A'}`);
+    console.log(`[Worker] Outcome: ${analysisResults.outcome || 'N/A'}`);
     await job.progress(90);
 
-    // Step 4: Save to DB (reformatted transcript, no checklist)
+    // Step 4: Save to DB
+    // Use formatted conversation text as transcript (with speaker labels)
     const dbResults = {
-      transcript: analysisResults.transcript,
+      transcript: analysisResults.formattedText || transcribedText,
+      raw_transcript: transcribedText,
       summary: analysisResults.summary,
       sentiment: analysisResults.sentiment.sentiment,
       sentiment_score: analysisResults.sentiment.score,
       ai_score: analysisResults.sentiment.score,
-      checklist: null,
-      raw_transcript: rawText,
-      customer_name: analysisResults.customerName || null
+      customer_name: analysisResults.customerName || null,
+      outcome: analysisResults.outcome || null
     };
 
     databaseService.saveAnalysisResult(finalCallId, dbResults);
@@ -115,13 +147,12 @@ async function processAnalysisJob(job) {
       recordingId: recordingId || `call_${finalCallId}`,
       phoneNumber,
       sttDuration,
-      transcriptLength: rawText.length,
+      transcriptLength: transcribedText.length,
       ...analysisResults,
     };
   } catch (error) {
     console.error(`[Worker] Job #${job.id} FAILED: ${error.message}`);
 
-    // Try to update status to failed
     try {
       const { callId, filePath, phoneNumber } = job.data;
       if (callId) {
