@@ -14,6 +14,10 @@ const CLAUDE_MODEL_SMART = process.env.CLAUDE_MODEL_SMART || 'sonnet';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434/api/generate';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'exaone3.5:2.4b';
 
+// ===== Fallback Chain 설정 =====
+// 장애 시 자동 전환: Claude → Gemini → Ollama
+const FALLBACK_CHAIN = ['claude', 'gemini', 'ollama'];
+
 // ===== CLI 실행 기반 함수 =====
 
 /**
@@ -172,33 +176,40 @@ async function callOllamaHttp(prompt) {
 }
 
 /**
- * 통합 AI 호출 함수
- * provider에 따라 적절한 CLI/API 호출, 실패 시 Ollama Fallback
+ * 통합 AI 호출 함수 (Fallback Chain 적용)
+ * Claude → Gemini → Ollama 순으로 자동 전환
+ * 지정된 provider부터 체인의 끝까지 순차 시도
  */
 async function callAI(prompt, options = {}) {
-  const provider = options.provider || AI_PROVIDER;
+  const startProvider = options.provider || AI_PROVIDER;
+  const startIdx = FALLBACK_CHAIN.indexOf(startProvider);
+  const chain = startIdx >= 0
+    ? FALLBACK_CHAIN.slice(startIdx)
+    : [startProvider];
 
-  try {
-    switch (provider) {
-      case 'claude': return await callClaude(prompt, options);
-      case 'gemini': return await callGemini(prompt, options);
-      case 'codex':  return await callCodex(prompt, options);
-      case 'ollama': return await callOllamaHttp(prompt);
-      default: throw new Error(`Unknown AI provider: ${provider}`);
-    }
-  } catch (error) {
-    // Fallback: 기본 provider 실패 시 Ollama로 시도
-    if (provider !== 'ollama') {
-      console.warn(`[AI-CLI] ${provider} 실패 (${error.message}), Ollama Fallback 시도...`);
-      try {
-        return await callOllamaHttp(prompt);
-      } catch (fallbackError) {
-        console.error(`[AI-CLI] Ollama Fallback도 실패: ${fallbackError.message}`);
-        throw error; // 원래 에러를 throw
+  let lastError = null;
+
+  for (const provider of chain) {
+    try {
+      switch (provider) {
+        case 'claude': return await callClaude(prompt, options);
+        case 'gemini': return await callGemini(prompt, options);
+        case 'codex':  return await callCodex(prompt, options);
+        case 'ollama': return await callOllamaHttp(prompt);
+        default: throw new Error(`Unknown AI provider: ${provider}`);
+      }
+    } catch (error) {
+      lastError = error;
+      const nextIdx = chain.indexOf(provider) + 1;
+      if (nextIdx < chain.length) {
+        console.warn(`[AI] ${provider} 실패 (${error.message}) → ${chain[nextIdx]} Fallback`);
+      } else {
+        console.error(`[AI] Fallback Chain 전체 실패: ${error.message}`);
       }
     }
-    throw error;
   }
+
+  throw lastError;
 }
 
 // ===== 분석 함수 (ollamaService와 동일한 인터페이스) =====
@@ -273,7 +284,7 @@ ${text}
 /**
  * 개조식 요약 생성
  */
-async function generateSummary(text) {
+async function generateSummary(text, options = {}) {
   if (!text || text.trim().length === 0) {
     throw new Error('요약할 텍스트가 비어있습니다.');
   }
@@ -292,13 +303,13 @@ ${text}
 
 요약:`;
 
-  return await callAI(prompt);
+  return await callAI(prompt, options);
 }
 
 /**
  * 감정 분석 + 점수 (팀별 평가 기준 반영)
  */
-async function analyzeSentiment(text, teamPrompt) {
+async function analyzeSentiment(text, teamPrompt, options = {}) {
   if (!text || text.trim().length === 0) {
     throw new Error('분석할 텍스트가 비어있습니다.');
   }
@@ -326,7 +337,7 @@ ${text}
 이유: [위 점수를 부여한 구체적 근거를 한 문장으로]`;
 
   try {
-    const response = await callAI(prompt);
+    const response = await callAI(prompt, options);
 
     const sentimentMatch = response.match(/감정:\s*(positive|negative|neutral)/i);
     const scoreMatch = response.match(/점수:\s*(\d+)/);
@@ -350,7 +361,7 @@ ${text}
 /**
  * 고객명 추출
  */
-async function extractCustomerName(text) {
+async function extractCustomerName(text, options = {}) {
   if (!text || text.trim().length === 0) return null;
 
   const prompt = `다음 통화에서 상담원이 고객을 부르는 이름을 찾아주세요.
@@ -372,7 +383,7 @@ ${text}
 고객명: [이름 또는 "확인불가"]`;
 
   try {
-    const response = await callAI(prompt);
+    const response = await callAI(prompt, options);
     const nameMatch = response.match(/고객명:\s*(.+)/);
 
     if (nameMatch) {
@@ -392,7 +403,7 @@ ${text}
 /**
  * 통화 결과 판정 (팀 유형별 기준 적용)
  */
-async function analyzeOutcome(text, teamName) {
+async function analyzeOutcome(text, teamName, options = {}) {
   if (!text || text.trim().length === 0) return null;
 
   const name = (teamName || '').toLowerCase();
@@ -460,7 +471,7 @@ ${text}
 결과: 보류: 고객검토필요`;
 
   try {
-    const response = await callAI(prompt);
+    const response = await callAI(prompt, options);
     const match = response.match(/결과:\s*(.+)/);
 
     if (match) {
@@ -635,9 +646,15 @@ ${text}`;
 }
 
 /**
- * 통합 분석 파이프라인 (Phase 2: 5회 → 2회 호출)
- * Step 1: 대화 분리 (haiku, 텍스트 응답)
- * Step 2: 통합 분석 (sonnet, JSON Schema 구조화 응답)
+ * 통합 분석 파이프라인 (Fallback Chain 적용)
+ *
+ * [Claude 사용 시 — Phase 2]
+ *   Step 1: 대화 분리 (haiku) → 실패 시 Gemini → Ollama
+ *   Step 2: 통합 분석 (sonnet, JSON Schema)
+ *     → Phase 2 실패 시 Phase 1 (Gemini→Ollama)로 자동 전환
+ *
+ * [Non-Claude 사용 시 — Phase 1]
+ *   Step 1: 대화 분리 → Step 2~5: 개별 분석 (각각 Fallback Chain 적용)
  *
  * @returns {{ formattedText, summary, sentiment, customerName, outcome }}
  */
@@ -647,61 +664,65 @@ async function analyzeCall(text, teamPrompt, teamName) {
   }
 
   const effectivePrompt = teamPrompt || getDefaultTeamPrompt(teamName) || null;
-  const providerLabel = AI_PROVIDER.toUpperCase();
-
-  // Claude provider일 때만 Phase 2 최적화 적용
-  // 다른 provider(gemini, codex, ollama)는 --json-schema 미지원 → Phase 1 방식 유지
-  const usePhase2 = (AI_PROVIDER === 'claude');
 
   try {
-    // Step 1: 대화 분리 (공통 - haiku로 빠르게)
-    console.log(`[${providerLabel}] Step 1/2: 대화 분리...`);
+    // Step 1: 대화 분리 (Fallback Chain 자동 적용)
+    console.log(`[AI] Step 1: 대화 분리 (${AI_PROVIDER})...`);
     const formattedText = await formatConversation(text);
 
-    if (usePhase2) {
-      // Phase 2: JSON Schema 통합 분석 (1회 호출)
-      console.log(`[${providerLabel}] Step 2/2: 통합 분석 (JSON Schema)...`);
-      const result = await analyzeUnified(text, effectivePrompt, teamName);
+    // Claude일 때 Phase 2 시도 (JSON Schema 통합 분석)
+    if (AI_PROVIDER === 'claude') {
+      try {
+        console.log(`[AI] Step 2: 통합 분석 (Claude sonnet, JSON Schema)...`);
+        const result = await analyzeUnified(text, effectivePrompt, teamName);
 
-      const sentiment = {
-        sentiment: result.sentiment || 'neutral',
-        score: result.sentiment_score || 5,
-        reason: result.sentiment_reason || ''
-      };
+        const sentiment = {
+          sentiment: result.sentiment || 'neutral',
+          score: result.sentiment_score || 5,
+          reason: result.sentiment_reason || ''
+        };
 
-      // customer_name 후처리
-      let customerName = result.customer_name || null;
-      if (customerName === '확인불가' || customerName === '없음' || customerName === 'null') {
-        customerName = null;
+        let customerName = result.customer_name || null;
+        if (customerName === '확인불가' || customerName === '없음' || customerName === 'null') {
+          customerName = null;
+        }
+
+        console.log(`[AI] Phase 2 완료 | ${sentiment.sentiment} (${sentiment.score}/10) | ${result.outcome}`);
+
+        return {
+          formattedText,
+          summary: result.summary,
+          sentiment,
+          customerName,
+          outcome: result.outcome || '보류: 판단불가'
+        };
+      } catch (phase2Error) {
+        console.warn(`[AI] Phase 2 (Claude) 실패: ${phase2Error.message}`);
+        console.warn(`[AI] → Phase 1 개별 호출 Fallback (Gemini→Ollama)...`);
+        // Phase 2 실패 → Phase 1로 전환, Claude 건너뛰고 Gemini부터 시작
       }
-
-      console.log(`[${providerLabel}] 통합 분석 완료 | 감정: ${sentiment.sentiment} (${sentiment.score}/10) | 결과: ${result.outcome}`);
-
-      return {
-        formattedText,
-        summary: result.summary,
-        sentiment,
-        customerName,
-        outcome: result.outcome || '보류: 판단불가'
-      };
     }
 
-    // Phase 1 Fallback: 개별 호출 (non-Claude provider)
-    console.log(`[${providerLabel}] Step 2/5: 요약...`);
-    const summary = await generateSummary(text);
+    // Phase 1: 개별 5단계 호출
+    // Claude Phase 2 실패 시 → provider: 'gemini'로 Claude 건너뛰기
+    const fallbackOpts = (AI_PROVIDER === 'claude') ? { provider: 'gemini' } : {};
+    const label = fallbackOpts.provider ? fallbackOpts.provider.toUpperCase() : AI_PROVIDER.toUpperCase();
 
-    console.log(`[${providerLabel}] Step 3/5: 감정 분석...`);
-    const sentiment = await analyzeSentiment(text, effectivePrompt);
+    console.log(`[${label}] Step 2/5: 요약...`);
+    const summary = await generateSummary(text, fallbackOpts);
 
-    console.log(`[${providerLabel}] Step 4/5: 고객명 추출...`);
-    const customerName = await extractCustomerName(text);
+    console.log(`[${label}] Step 3/5: 감정 분석...`);
+    const sentiment = await analyzeSentiment(text, effectivePrompt, fallbackOpts);
 
-    console.log(`[${providerLabel}] Step 5/5: 결과 판정...`);
-    const outcome = await analyzeOutcome(text, teamName);
+    console.log(`[${label}] Step 4/5: 고객명 추출...`);
+    const customerName = await extractCustomerName(text, fallbackOpts);
+
+    console.log(`[${label}] Step 5/5: 결과 판정...`);
+    const outcome = await analyzeOutcome(text, teamName, fallbackOpts);
 
     return { formattedText, summary, sentiment, customerName, outcome };
   } catch (error) {
-    console.error(`[${providerLabel}] 분석 실패:`, error.message);
+    console.error(`[AI] Fallback Chain 전체 실패:`, error.message);
     throw error;
   }
 }
