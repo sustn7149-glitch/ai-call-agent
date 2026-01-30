@@ -31,8 +31,9 @@ function execCli(bin, args, stdinData, timeoutMs = 180000) {
     const proc = spawn(bin, args, {
       env: {
         ...process.env,
-        PATH: `${CLI_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
-        HOME: process.env.HOME || '/home/sustn7149',
+        PATH: `${CLI_BIN}:/host-cli/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+        HOME: process.env.HOME || '/root',
+        NODE_PATH: '/host-cli/lib/node_modules',
       },
       timeout: timeoutMs,
       stdio: ['pipe', 'pipe', 'pipe'],

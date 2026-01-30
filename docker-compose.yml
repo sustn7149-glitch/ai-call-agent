@@ -5,7 +5,7 @@
 # 실행: docker compose up -d
 # 중지: docker compose down
 # 로그: docker compose logs -f
-# Ollama 모델 설치: docker compose exec ollama ollama pull exaone3.5:2.4b
+# AI Provider: Claude (haiku+sonnet) → Gemini → Ollama (fallback chain)
 
 services:
   # ===== Redis =====
@@ -94,12 +94,19 @@ services:
       - WHISPER_URL=http://stt-server:9000/asr
       - OLLAMA_URL=http://ollama:11434/api/generate
       - OLLAMA_MODEL=exaone3.5:2.4b
+      - AI_PROVIDER=claude
+      - AI_CLI_BIN=/host-cli/bin
+      - CLAUDE_MODEL_FAST=haiku
+      - CLAUDE_MODEL_SMART=sonnet
       - DB_PATH=/data/db/database.sqlite
       - RECORDINGS_PATH=/data/recordings
       - DASHBOARD_PATH=/app/public
     volumes:
       - recordings:/data/recordings
       - backend_data:/data/db
+      # Claude CLI 도구 + 인증정보 마운트 (호스트 → 컨테이너)
+      - /home/sustn7149/.npm-global:/host-cli:ro
+      - /home/sustn7149/.claude:/root/.claude
     depends_on:
       redis:
         condition: service_healthy
