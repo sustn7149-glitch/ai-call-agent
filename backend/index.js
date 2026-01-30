@@ -489,23 +489,30 @@ db.ready().then(() => {
   server.listen(3000, '0.0.0.0', async () => {
     console.log('Server running on 0.0.0.0:3000');
 
-    // 시작 시 pending 분석 건 자동 재큐잉
+    // 시작 시 pending 분석 건 자동 재큐잉 (큐가 비어있을 때만)
     try {
-      const pendingCalls = db.getPendingAnalysisCalls();
-      if (pendingCalls.length > 0) {
-        let queued = 0;
-        for (const call of pendingCalls) {
-          if (call.recording_path) {
-            await queueService.addAnalysisJob({
-              filePath: call.recording_path,
-              fileName: call.recording_path.split('/').pop(),
-              phoneNumber: call.phone_number || '',
-              callId: call.id
-            });
-            queued++;
+      const queueStats = await queueService.getQueueStats();
+      const queuedCount = (queueStats.waiting || 0) + (queueStats.active || 0);
+
+      if (queuedCount < 5) {
+        const pendingCalls = db.getPendingAnalysisCalls();
+        if (pendingCalls.length > 0) {
+          let queued = 0;
+          for (const call of pendingCalls) {
+            if (call.recording_path) {
+              await queueService.addAnalysisJob({
+                filePath: call.recording_path,
+                fileName: call.recording_path.split('/').pop(),
+                phoneNumber: call.phone_number || '',
+                callId: call.id
+              });
+              queued++;
+            }
           }
+          console.log(`[Startup] ${queued} pending calls requeued for analysis`);
         }
-        console.log(`[Startup] ${queued} pending calls requeued for analysis`);
+      } else {
+        console.log(`[Startup] Queue already has ${queuedCount} jobs, skipping requeue`);
       }
     } catch (e) {
       console.error('[Startup] Requeue error:', e.message);
