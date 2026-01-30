@@ -95,17 +95,20 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// Heartbeat
+// Heartbeat (enhanced: accepts optional call state from Android)
 app.post('/api/heartbeat', async (req, res) => {
-  const { userName, userPhone } = req.body;
-  console.log(`[Heartbeat] ${userName} (${userPhone}) is online`);
+  const { userName, userPhone, callState, callNumber, callStartTime } = req.body;
+  console.log(`[Heartbeat] ${userName} (${userPhone}) state=${callState || 'idle'}`);
 
   try {
     const key = `online_status:${userPhone}`;
     const value = JSON.stringify({
       userName,
       userPhone,
-      lastSeen: new Date().toISOString()
+      lastSeen: new Date().toISOString(),
+      callState: callState || 'idle',
+      callNumber: callNumber || null,
+      callStartTime: callStartTime || null
     });
     await redis.set(key, value, 'EX', 7200);
   } catch (err) {
@@ -176,6 +179,182 @@ app.get('/api/online-agents', async (req, res) => {
   }
 });
 
+// Live Monitor: combined team summaries + agent list with daily stats
+app.get('/api/live-monitor', async (req, res) => {
+  try {
+    // 1. Registered agents from DB
+    const registeredAgents = db.getAllAgents();
+
+    // 2. Online agents from Redis (batch read)
+    const keys = await redis.keys('online_status:*');
+    const onlineMap = {};
+    if (keys.length > 0) {
+      const values = await redis.mget(keys);
+      values.forEach((data) => {
+        if (data) {
+          const agent = JSON.parse(data);
+          onlineMap[agent.userPhone] = agent;
+        }
+      });
+    }
+
+    // 3. Per-agent daily stats from DB
+    const statsMap = db.getAgentDailyStatsMap();
+
+    // 4. Build agent list (registered + unregistered-but-online)
+    const seen = new Set();
+    const agentList = [];
+
+    for (const reg of registeredAgents) {
+      seen.add(reg.phone_number);
+      const online = onlineMap[reg.phone_number];
+      const stats = statsMap[reg.phone_number];
+
+      agentList.push({
+        name: reg.name || (online && online.userName) || reg.phone_number,
+        phone: reg.phone_number,
+        teamName: reg.team_name || null,
+        status: online
+          ? ((online.callState === 'oncall') ? 'oncall' : 'idle')
+          : 'offline',
+        lastSeen: online ? online.lastSeen : null,
+        callNumber: online ? online.callNumber : null,
+        callStartTime: online ? online.callStartTime : null,
+        todayStats: {
+          total: stats ? stats.total_calls : 0,
+          outgoing: stats ? stats.outgoing : 0,
+          incoming: stats ? stats.incoming : 0,
+          missed: stats ? stats.missed : 0,
+          totalDuration: stats ? stats.total_duration : 0,
+        },
+        lastCallAt: stats ? stats.last_call_at : null,
+      });
+    }
+
+    // Include online but unregistered agents
+    for (const phone of Object.keys(onlineMap)) {
+      if (!seen.has(phone)) {
+        const online = onlineMap[phone];
+        const stats = statsMap[phone];
+
+        agentList.push({
+          name: online.userName || phone,
+          phone,
+          teamName: null,  // Not in agents table by definition
+          status: (online.callState === 'oncall') ? 'oncall' : 'idle',
+          lastSeen: online.lastSeen,
+          callNumber: online.callNumber || null,
+          callStartTime: online.callStartTime || null,
+          todayStats: {
+            total: stats ? stats.total_calls : 0,
+            outgoing: stats ? stats.outgoing : 0,
+            incoming: stats ? stats.incoming : 0,
+            missed: stats ? stats.missed : 0,
+            totalDuration: stats ? stats.total_duration : 0,
+          },
+          lastCallAt: stats ? stats.last_call_at : null,
+        });
+      }
+    }
+
+    // 5. Build team summaries
+    const teamMap = {};
+    for (const agent of agentList) {
+      const team = agent.teamName || '미지정';
+      if (!teamMap[team]) {
+        teamMap[team] = {
+          teamName: team,
+          memberCount: 0,
+          onlineCount: 0,
+          onCallCount: 0,
+          todayStats: { total: 0, outgoing: 0, incoming: 0, missed: 0, totalDuration: 0 }
+        };
+      }
+      const t = teamMap[team];
+      t.memberCount++;
+      if (agent.status !== 'offline') t.onlineCount++;
+      if (agent.status === 'oncall') t.onCallCount++;
+      t.todayStats.total += agent.todayStats.total;
+      t.todayStats.outgoing += agent.todayStats.outgoing;
+      t.todayStats.incoming += agent.todayStats.incoming;
+      t.todayStats.missed += agent.todayStats.missed;
+      t.todayStats.totalDuration += agent.todayStats.totalDuration;
+    }
+
+    // 6. Global totals
+    const globalStats = { total: 0, outgoing: 0, incoming: 0, missed: 0, totalDuration: 0 };
+    for (const t of Object.values(teamMap)) {
+      globalStats.total += t.todayStats.total;
+      globalStats.outgoing += t.todayStats.outgoing;
+      globalStats.incoming += t.todayStats.incoming;
+      globalStats.missed += t.todayStats.missed;
+      globalStats.totalDuration += t.todayStats.totalDuration;
+    }
+
+    res.json({
+      teams: Object.values(teamMap),
+      agents: agentList,
+      globalStats
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Teams CRUD
+app.get('/api/teams', (req, res) => {
+  try {
+    res.json(db.getAllTeams());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/teams', (req, res) => {
+  try {
+    const { name, description, evaluation_prompt } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: '팀 이름은 필수입니다' });
+    }
+    const result = db.createTeam({ name, description, evaluation_prompt });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    if (err.message && err.message.includes('UNIQUE')) {
+      return res.status(409).json({ error: '이미 존재하는 팀 이름입니다' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/teams/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid team ID' });
+    const result = db.updateTeam(id, req.body);
+    if (result.changes === 0) return res.status(404).json({ error: 'Team not found' });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/teams/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid team ID' });
+    const result = db.deleteTeam(id);
+    if (result.changes === 0) return res.status(404).json({ error: 'Team not found' });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Agents CRUD
 app.get('/api/agents', (req, res) => {
   try {
@@ -220,6 +399,28 @@ app.get('/api/analytics/daily', (req, res) => {
 app.get('/api/analytics/team', (req, res) => {
   try {
     res.json(db.getTeamAnalytics());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reports: period-based agent performance stats
+app.get('/api/reports/stats', (req, res) => {
+  try {
+    const { startDate, endDate, team } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
+      return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
+    }
+    if (startDate > endDate) {
+      return res.status(400).json({ error: 'startDate must not be after endDate' });
+    }
+    const result = db.getReportStats(startDate, endDate, team || null);
+    res.json(result);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

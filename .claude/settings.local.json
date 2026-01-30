@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 sustn7149@192.168.68.103 \"echo ''=== CLOUDFLARE TUNNEL DOMAIN ==='' && docker logs call-agent-tunnel 2>&1 | grep -i ''connection\\\\|registered\\\\|domain\\\\|route'' | head -10 && echo '''' && echo ''=== DDNS TEST ==='' && curl -sI http://loun.tplinkdns.com:3000 2>/dev/null | head -5 || echo ''DDNS unreachable from server'' && echo '''' && echo ''=== RECORDINGS DIR ==='' && docker exec call-agent-backend ls /data/recordings/ 2>/dev/null | head -20 && echo '''' && echo ''=== DB FILE ==='' && docker exec call-agent-backend ls -la /data/db/ 2>/dev/null\")"
+    ]
+  }
+}
