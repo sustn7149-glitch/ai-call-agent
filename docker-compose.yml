@@ -15,6 +15,8 @@ services:
     container_name: call-agent-redis
     restart: unless-stopped
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"   # 호스트 워커 접근용
     volumes:
       - redis_data:/data
     networks:
@@ -41,6 +43,8 @@ services:
     environment:
       - WHISPER_MODEL=small
       - STT_PORT=9000
+    ports:
+      - "9000:9000"   # 호스트 워커 접근용
     volumes:
       - whisper_cache:/root/.cache
     networks:

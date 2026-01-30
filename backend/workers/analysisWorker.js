@@ -1,7 +1,12 @@
 const queueService = require("../services/queueService");
 const whisperService = require("../services/whisperService");
 const ollamaService = require("../services/ollamaService");
+const aiCliService = require("../services/aiCliService");
 const databaseService = require("../services/databaseService");
+
+// AI Provider 선택: claude | gemini | codex → aiCliService, ollama → ollamaService
+const AI_PROVIDER = process.env.AI_PROVIDER || 'ollama';
+const aiService = (AI_PROVIDER === 'ollama') ? ollamaService : aiCliService;
 
 const CONCURRENCY = 1;
 
@@ -116,7 +121,7 @@ async function processAnalysisJob(job) {
     console.log(`[Worker] AI analysis starting... (team: ${teamName || 'N/A'}, custom prompt: ${teamPrompt ? 'YES' : 'NO'})`);
 
     // Step 3: AI Analysis (conversation format + summary + sentiment + customer name + outcome)
-    const analysisResults = await ollamaService.analyzeCall(transcribedText, teamPrompt, teamName);
+    const analysisResults = await aiService.analyzeCall(transcribedText, teamPrompt, teamName);
 
     console.log(`[Worker] AI complete | summary: ${analysisResults.summary.substring(0, 80)}...`);
     console.log(`[Worker] Emotion: ${analysisResults.sentiment.sentiment} (${analysisResults.sentiment.score}/10)`);
@@ -174,7 +179,7 @@ function start() {
   const queue = queueService.getQueue();
   queue.process(CONCURRENCY, processAnalysisJob);
 
-  console.log(`[Worker] Analysis Worker started (Concurrency: ${CONCURRENCY})`);
+  console.log(`[Worker] Analysis Worker started (Concurrency: ${CONCURRENCY}, AI Provider: ${AI_PROVIDER})`);
 
   process.on("SIGTERM", async () => {
     console.log(`[Worker] SIGTERM - shutting down...`);

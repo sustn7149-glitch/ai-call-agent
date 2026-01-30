@@ -444,7 +444,13 @@ db.ready().then(() => {
   db.cleanupJunkRows();
 
   queueService.setSocketIO(io);
-  analysisWorker.start();
+
+  // DISABLE_WORKER=true 일 때 내장 워커 비활성화 (호스트에서 별도 실행 시)
+  if (process.env.DISABLE_WORKER !== 'true') {
+    analysisWorker.start();
+  } else {
+    console.log('[Server] Worker disabled (DISABLE_WORKER=true). Run worker separately on host.');
+  }
 
   server.listen(3000, '0.0.0.0', () => {
     console.log('Server running on 0.0.0.0:3000');

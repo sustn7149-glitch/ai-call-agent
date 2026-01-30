@@ -1,6 +1,6 @@
 # AI 품질 고도화 계획 (AI Upgrade Plan)
 
-> **최종 수정**: 2026-01-30 | CTO 리뷰 완료
+> **최종 수정**: 2026-01-30 | CTO 리뷰 완료 (네이티브 CLI 방식)
 
 ---
 
@@ -33,130 +33,203 @@ STT 텍스트 입력
 
 ---
 
-## 2. 개선 방향
+## 2. 서버 AI 자원 현황 (확인 완료)
 
-### 2.1 핵심 전략: API SDK 기반 고성능 모델 도입
+N100 서버에 이미 설치 및 결제 완료된 네이티브 CLI 도구:
 
-> **중요 변경**: CLI(`child_process`) 방식 대신 **공식 API SDK**를 사용합니다.
+| 도구 | 버전 | 경로 | 비대화형 호출 | 비용 |
+|------|------|------|-------------|------|
+| **Claude Code** | 2.1.17 | `/home/sustn7149/.npm-global/bin/claude` | `claude -p "프롬프트"` | 구독 완료 (추가 비용 없음) |
+| **Gemini CLI** | 0.25.1 | `/home/sustn7149/.npm-global/bin/gemini` | `gemini "프롬프트"` | 구독 완료 (추가 비용 없음) |
+| **Codex CLI** | 0.89.0 | `/home/sustn7149/.npm-global/bin/codex` | `codex exec "프롬프트"` | 구독 완료 (추가 비용 없음) |
+| **Ollama** | (기존) | `ollama` | HTTP API | 무료 (로컬) |
 
-#### CLI 방식의 문제점 (기존 계획의 리스크)
-- Shell 명령어로 AI 호출 시 **입력 이스케이핑 문제** → 통화 내용에 특수문자, 따옴표 포함 시 명령어 깨짐
-- **Shell Injection 보안 위험** → 사용자 생성 콘텐츠(통화 내용)를 쉘에 직접 전달
-- CLI 도구는 대화형 인터페이스 → **프로그래밍 방식의 안정적 호출 불가**
-- stdout 파싱 불안정, 에러 핸들링 미흡
-- CLI 도구도 결국 API 크레딧 소비 → **비용 절감 효과 없음**
-
-#### API SDK 방식의 장점
-- 공식 Node.js SDK 사용 → 안정적이고 타입 안전한 호출
-- 구조화된 요청/응답 (JSON Mode, Structured Output)
-- 적절한 에러 핸들링, 재시도 로직 내장
-- temperature, max_tokens 등 파라미터 제어
-- Rate Limit 관리 기능 내장
-
-### 2.2 아키텍처 변경
-```
-[기존]
-  analysisWorker.js → ollamaService.js → HTTP → Ollama (Exaone 3.5)
-
-[변경]
-  analysisWorker.js → aiService.js → {
-    ├─ AnthropicProvider (Claude API SDK)
-    ├─ OpenAIProvider (GPT API SDK)
-    ├─ OllamaProvider (기존 로컬, Fallback)
-    └─ 환경변수로 선택: AI_PROVIDER=anthropic|openai|ollama
-  }
-```
-
-### 2.3 AI 모델 선택 기준
-| 모델 | 강점 | 적합한 작업 | 비용 |
-|------|------|------------|------|
-| **Claude 3.5 Sonnet** | 지시 이행, 뉘앙스 파악, 한국어 | 화자 분리, 감정 분석 | 중간 |
-| **GPT-4o mini** | 빠른 속도, 구조화 출력 | 요약, 고객명 추출 | 낮음 |
-| **Ollama (로컬)** | 무료, 오프라인 | Fallback, 단순 작업 | 무료 |
+### 검증 완료 항목
+- [x] 세 도구 모두 비대화형(non-interactive) 모드 동작 확인
+- [x] stdin 파이프 입력 동작 확인 (`echo "프롬프트" | claude -p`)
+- [x] Claude: `--model`, `--json-schema`, `--output-format json` 옵션 지원 확인
+- [x] Gemini: positional prompt one-shot 모드 확인
+- [x] Codex: `exec` 서브커맨드 비대화형 모드 확인 (git 디렉토리 필요)
 
 ---
 
-## 3. 상세 구현 계획
+## 3. 개선 방향: 네이티브 CLI 기반
 
-### 3.1 Phase 1: AI Service 리팩토링 (핵심)
+### 3.1 핵심 전략
 
-#### [NEW] `services/aiService.js` (신규 생성)
-```javascript
-// Provider 인터페이스 패턴
-const providers = {
-  anthropic: require('./providers/anthropicProvider'),
-  openai: require('./providers/openaiProvider'),
-  ollama: require('./providers/ollamaProvider'),  // 기존 로직 래핑
-};
+기존 Ollama HTTP API 방식을 **로컬에 설치된 고성능 AI CLI 도구**로 교체합니다.
+이미 구독 결제가 완료되어 **추가 비용 없이** SOTA 모델의 품질을 활용할 수 있습니다.
 
-const AI_PROVIDER = process.env.AI_PROVIDER || 'ollama';
+### 3.2 아키텍처 변경
+```
+[기존]
+  Docker 컨테이너 내부:
+    analysisWorker.js → ollamaService.js → HTTP → Ollama (Exaone 3.5:2.4b)
 
-async function callAI(prompt, options = {}) {
-  const provider = providers[options.provider || AI_PROVIDER];
-  try {
-    return await provider.generate(prompt, options);
-  } catch (error) {
-    // Fallback to Ollama if primary fails
-    if (AI_PROVIDER !== 'ollama') {
-      console.warn(`[AI] ${AI_PROVIDER} failed, falling back to Ollama`);
-      return await providers.ollama.generate(prompt, options);
+[변경]
+  호스트에서 직접 실행 (Docker 외부):
+    analysisWorker.js → aiCliService.js → child_process.spawn → {
+      ├─ claude -p (Primary: 화자분리, 감정분석, 결과판정)
+      ├─ gemini (Secondary: 요약, 고객명 추출)
+      └─ ollama (Fallback)
     }
+```
+
+### 3.3 Docker vs 호스트 실행 (중요)
+
+현재 백엔드는 Docker 컨테이너 내부에서 실행되지만, CLI 도구는 **호스트**에 설치되어 있습니다.
+
+**선택지 A (권장): 분석 워커를 호스트에서 실행**
+- `analysisWorker.js`만 Docker 외부, 호스트에서 별도 Node.js 프로세스로 실행
+- Redis/BullMQ를 통해 기존 백엔드와 통신 (현재와 동일한 큐 구조)
+- CLI 도구에 직접 접근 가능, 인증 설정도 그대로 사용
+
+**선택지 B: Docker에 CLI 도구 마운트**
+- `docker-compose.yml`에 볼륨 마운트 추가:
+  ```yaml
+  volumes:
+    - /home/sustn7149/.npm-global:/npm-global:ro
+    - /home/sustn7149/.claude:/root/.claude:ro
+    - /home/sustn7149/.config:/root/.config:ro
+  ```
+- 컨테이너 내에서 CLI 호출 가능하나 권한/경로 문제 발생 가능성 있음
+
+### 3.4 AI 모델 역할 분배
+| 분석 단계 | 담당 AI | 이유 |
+|----------|---------|------|
+| 화자 분리 (대화 재구성) | **Claude** | 지시 이행 능력 최상, "원문 한 글자도 바꾸지 마라" 규칙 준수 |
+| 요약 | **Gemini** | 빠른 속도, 간결한 요약에 적합 |
+| 감정 분석 + 점수 | **Claude** | 뉘앙스 파악, 한국어 이해도 우수 |
+| 고객명 추출 | **Gemini** | 단순 패턴 추출 작업, 빠른 응답 |
+| 결과 판정 | **Claude** | 복잡한 비즈니스 로직 판단 |
+
+---
+
+## 4. 상세 구현 계획
+
+### 4.1 Phase 1: aiCliService.js 신규 생성
+
+Node.js `child_process.spawn`으로 CLI 도구를 호출합니다.
+**stdin으로 프롬프트를 전달**하여 Shell 이스케이핑 문제를 완전히 회피합니다.
+
+#### [NEW] `services/aiCliService.js`
+```javascript
+const { spawn } = require('child_process');
+const path = require('path');
+
+const CLI_BIN = '/home/sustn7149/.npm-global/bin';
+const AI_PROVIDER = process.env.AI_PROVIDER || 'claude'; // claude | gemini | codex | ollama
+
+/**
+ * CLI 도구 실행 (stdin으로 프롬프트 전달 → Shell 이스케이핑 불필요)
+ */
+function execCli(bin, args, prompt, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(bin, args, {
+      env: { ...process.env, PATH: `${CLI_BIN}:/usr/local/bin:/usr/bin:/bin` },
+      timeout: timeoutMs,
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (d) => (stdout += d));
+    proc.stderr.on('data', (d) => (stderr += d));
+    proc.on('close', (code) => {
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(`CLI exit ${code}: ${stderr.slice(0, 200)}`));
+    });
+    proc.on('error', reject);
+
+    // 프롬프트를 stdin으로 전달 (긴 텍스트도 안전)
+    proc.stdin.write(prompt);
+    proc.stdin.end();
+  });
+}
+
+/** Claude Code CLI 호출 */
+async function callClaude(prompt, options = {}) {
+  const args = ['-p', '--model', options.model || 'sonnet'];
+  if (options.jsonSchema) {
+    args.push('--json-schema', JSON.stringify(options.jsonSchema));
+    args.push('--output-format', 'json');
+  }
+  return execCli(path.join(CLI_BIN, 'claude'), args, prompt, options.timeout || 120000);
+}
+
+/** Gemini CLI 호출 */
+async function callGemini(prompt, options = {}) {
+  // gemini는 positional prompt 사용, stdin 미지원 시 임시 파일 활용
+  return execCli(path.join(CLI_BIN, 'gemini'), [], prompt, options.timeout || 120000);
+}
+
+/** Codex (OpenAI) CLI 호출 */
+async function callCodex(prompt, options = {}) {
+  return execCli(
+    path.join(CLI_BIN, 'codex'),
+    ['exec', '--skip-git-repo-check'],
+    prompt,
+    options.timeout || 120000
+  );
+}
+
+/** 통합 호출 함수 (Fallback 포함) */
+async function callAI(prompt, options = {}) {
+  const provider = options.provider || AI_PROVIDER;
+  try {
+    switch (provider) {
+      case 'claude': return await callClaude(prompt, options);
+      case 'gemini': return await callGemini(prompt, options);
+      case 'codex':  return await callCodex(prompt, options);
+      case 'ollama': return await callOllama(prompt); // 기존 HTTP 방식
+      default: throw new Error(`Unknown provider: ${provider}`);
+    }
+  } catch (error) {
+    console.warn(`[AI] ${provider} 실패: ${error.message}, Ollama로 Fallback`);
+    if (provider !== 'ollama') return await callOllama(prompt);
     throw error;
   }
 }
 ```
 
-#### [NEW] `services/providers/anthropicProvider.js`
-```javascript
-const Anthropic = require('@anthropic-ai/sdk');
-// API Key: 환경변수 ANTHROPIC_API_KEY
+#### 핵심 안전장치: stdin 파이프
+- 프롬프트를 **커맨드 인자가 아닌 stdin**으로 전달
+- 통화 내용에 따옴표, 특수문자, 줄바꿈이 있어도 안전
+- Shell Injection 위험 제거 (`spawn`은 shell을 거치지 않음)
+
+### 4.2 Phase 2: 파이프라인 최적화
+
+#### 분석 단계 통합 (5회 → 2회 호출)
 ```
-
-#### [NEW] `services/providers/openaiProvider.js`
-```javascript
-const OpenAI = require('openai');
-// API Key: 환경변수 OPENAI_API_KEY
-```
-
-#### [MODIFY] `workers/analysisWorker.js`
-- `ollamaService` → `aiService`로 교체
-- 기존 5단계 파이프라인 유지하되 provider 선택 가능
-
-### 3.2 Phase 2: 파이프라인 최적화
-
-#### 분석 단계 통합 (5회 → 2~3회 호출로 축소)
-```
-[기존: 5회 순차 호출]
+[기존: 5회 순차 호출, 모두 Ollama]
   1. 대화분리 → 2. 요약 → 3. 감정분석 → 4. 고객명 → 5. 결과판정
 
-[개선: 2~3회 호출]
-  1. 대화분리 (원문 보존이 중요하므로 별도 유지)
-  2. 통합 분석 (요약 + 감정 + 고객명 + 결과를 하나의 JSON으로 응답)
-     → JSON Mode 활용하여 구조화된 응답 보장
+[개선: 2회 호출, 고성능 모델]
+  1. Claude: 대화분리 (원문 보존이 핵심 → 별도 유지)
+  2. Claude: 통합 분석 (요약 + 감정 + 고객명 + 결과를 JSON 한 번에)
+     → --json-schema 옵션으로 구조화된 응답 보장
 ```
 
-#### 통합 프롬프트 예시 (Phase 2)
+#### Claude 통합 분석 프롬프트 (Phase 2)
 ```
-통화 내용을 분석하여 다음 JSON 형식으로 정확히 응답하세요:
-{
-  "summary": "개조식 요약 (3-5항목, - 로 시작)",
-  "sentiment": "positive|negative|neutral",
-  "sentiment_score": 1~10,
-  "sentiment_reason": "판단 근거",
-  "customer_name": "고객명 또는 null",
-  "outcome": "성공|실패|보류: 사유"
-}
+claude -p --model sonnet --json-schema '{"type":"object","properties":{"summary":{"type":"string"},"sentiment":{"type":"string","enum":["positive","negative","neutral"]},"sentiment_score":{"type":"integer","minimum":1,"maximum":10},"sentiment_reason":{"type":"string"},"customer_name":{"type":"string"},"outcome":{"type":"string"}},"required":["summary","sentiment","sentiment_score","outcome"]}' --output-format json
 ```
 
-### 3.3 Phase 3: 프롬프트 엔지니어링 고도화
+이렇게 하면:
+- **5회 → 2회**로 호출 횟수 60% 감소
+- JSON Schema 강제 → 정규식 파싱 불필요, 형식 불일치 0%
+- 분석 시간 대폭 단축
 
-현재 모델과 무관하게 **프롬프트 개선만으로도** 품질 향상이 가능한 영역:
+### 4.3 Phase 3: 프롬프트 엔지니어링 고도화
 
-1. **화자 분리**: Few-shot 예시 추가 (올바른 분리 예시 2~3개 포함)
+고성능 모델은 프롬프트 품질에 더 민감하게 반응하므로, 프롬프트도 함께 개선:
+
+1. **화자 분리**: Few-shot 예시 2~3개 포함 (올바른 분리 예시)
 2. **평가 기준**: 팀별 루브릭(Rubric) 명시 → 점수 산출 논리 투명화
-3. **결과 판정**: Chain-of-Thought 유도 → "먼저 통화 목적을 파악하고, 그 목적 달성 여부를 판단하세요"
+3. **결과 판정**: Chain-of-Thought → "먼저 통화 목적을 파악하고, 달성 여부를 판단하세요"
+4. **Claude 모델 선택**: 화자분리는 `haiku` (빠름), 통합분석은 `sonnet` (정확)
 
-### 3.4 Phase 4: STT 품질 개선 (선택)
+### 4.4 Phase 4: STT 품질 개선 (선택)
 
 | 개선안 | 설명 | 효과 |
 |--------|------|------|
@@ -166,94 +239,99 @@ const OpenAI = require('openai');
 
 ---
 
-## 4. 환경 설정
+## 5. 환경 설정
 
-### 4.1 필요한 환경변수 (.env)
+### 5.1 필요한 환경변수 (.env)
 ```env
-# AI Provider 선택 (anthropic | openai | ollama)
-AI_PROVIDER=ollama
+# AI Provider 선택 (claude | gemini | codex | ollama)
+AI_PROVIDER=claude
 
-# Anthropic (Claude)
-ANTHROPIC_API_KEY=sk-ant-...
+# CLI 도구 경로 (N100 서버)
+AI_CLI_BIN=/home/sustn7149/.npm-global/bin
 
-# OpenAI (GPT)
-OPENAI_API_KEY=sk-...
+# Claude 모델 설정
+CLAUDE_MODEL_FAST=haiku     # 화자분리 등 단순 작업용
+CLAUDE_MODEL_SMART=sonnet   # 통합분석 등 고품질 작업용
 
-# Ollama (기존, 기본값)
+# Ollama (Fallback용)
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=exaone3.5:2.4b
 ```
 
-### 4.2 필요한 NPM 패키지
+### 5.2 실행 방식 변경 (선택지 A 적용 시)
+
 ```bash
-npm install @anthropic-ai/sdk openai
+# 기존: Docker 내에서 워커 실행
+# docker compose up backend  (워커 포함)
+
+# 변경: 백엔드는 Docker, 워커는 호스트에서 별도 실행
+docker compose up backend    # API + 웹서버 (워커 제외)
+node backend/workers/analysisWorker.js   # 호스트에서 직접 실행 (CLI 접근 가능)
 ```
 
----
-
-## 5. 비용 분석
-
-### 예상 비용 (1건당, Claude 3.5 Sonnet 기준)
-| 단계 | Input Tokens | Output Tokens | 비용 (USD) |
-|------|-------------|---------------|-----------|
-| 대화분리 | ~2,000 | ~2,000 | ~$0.012 |
-| 통합분석 | ~2,500 | ~500 | ~$0.010 |
-| **합계** | | | **~$0.022/건** |
-
-### 월간 비용 추정
-| 일 분석량 | 월 분석량 | Claude | GPT-4o mini | Ollama |
-|----------|----------|--------|-------------|--------|
-| 50건 | 1,500건 | ~$33 | ~$5 | $0 |
-| 200건 | 6,000건 | ~$132 | ~$18 | $0 |
-| 500건 | 15,000건 | ~$330 | ~$45 | $0 |
-
-### 추천 전략
-- **초기**: Ollama 유지 + 프롬프트 개선 (Phase 3)으로 무비용 품질 향상
-- **품질 우선**: Claude API 도입 (Phase 1) → 건당 ~$0.02
-- **비용 최적화**: GPT-4o mini 사용 → 건당 ~$0.003
+### 5.3 추가 패키지: 없음
+이미 설치된 CLI 도구만 사용하므로 npm 추가 패키지 불필요.
 
 ---
 
-## 6. 검증 계획
+## 6. 비용 분석
 
-### 6.1 품질 비교 테스트
-1. 동일한 녹취 파일 10건을 선정
-2. 각 모델(Ollama, Claude, GPT)로 분석 실행
+### 기존 대비 비용 변화
+| 항목 | 기존 (Ollama) | 변경 (네이티브 CLI) |
+|------|--------------|-------------------|
+| AI 모델 비용 | $0 (로컬) | **$0** (구독 결제 완료) |
+| 분석 품질 | 낮음 (2.4B 경량 모델) | **높음** (SOTA 모델) |
+| 분석 속도 | 느림 (N100 CPU 추론) | **빠름** (클라우드 추론) |
+| 서버 부하 | 높음 (CPU 100%) | **낮음** (CLI 호출만) |
+
+> 결론: **추가 비용 0원으로 품질 대폭 향상** 가능
+
+---
+
+## 7. 검증 계획
+
+### 7.1 품질 비교 테스트
+1. 동일한 녹취 파일 10건 선정
+2. Ollama vs Claude CLI vs Gemini CLI 결과 비교
 3. 비교 항목:
    - 화자 분리 정확도 (원문 보존율)
-   - 요약의 핵심 포착 여부
+   - 요약 핵심 포착 여부
    - 감정 분석 일관성
    - 결과 판정 정확도
+   - JSON 스키마 준수율
 
-### 6.2 성능 벤치마크
-- 분석 1건당 소요 시간 비교
-- 파이프라인 통합 전/후 속도 비교
+### 7.2 성능 벤치마크
+- 분석 1건당 소요 시간: Ollama(CPU 추론) vs CLI(클라우드 추론)
+- 파이프라인 통합 전/후 속도 비교 (5회→2회)
 - 동시 처리 가능 건수
 
-### 6.3 안정성 테스트
-- API 장애 시 Fallback 동작 확인
-- Rate Limit 도달 시 대기/재시도 동작 확인
-- 긴 통화(30분 이상) 처리 가능 여부
+### 7.3 안정성 테스트
+- CLI 도구 장애 시 Ollama Fallback 동작 확인
+- 네트워크 끊김 시 대기/재시도
+- 긴 통화(30분 이상, 텍스트 5000자+) 처리 가능 여부
+- stdin 파이프로 특수문자 포함 텍스트 전달 테스트
 
 ---
 
-## 7. 구현 우선순위 (로드맵)
+## 8. 구현 우선순위 (로드맵)
 
-| 순서 | Phase | 핵심 내용 | 비용 변화 |
-|------|-------|----------|----------|
-| **1** | Phase 3 | 프롬프트 엔지니어링 최적화 | 무비용 |
-| **2** | Phase 2 | 파이프라인 통합 (5회→2회 호출) | 무비용 (속도 향상) |
-| **3** | Phase 1 | API SDK 기반 Provider 패턴 구현 | API 비용 발생 |
-| **4** | Phase 4 | STT 품질 개선 | 서버 리소스 |
+| 순서 | Phase | 핵심 내용 | 비용 |
+|------|-------|----------|------|
+| **1** | Phase 1 | `aiCliService.js` 생성 + 워커 교체 | $0 |
+| **2** | Phase 2 | 파이프라인 통합 (5회→2회, JSON Schema) | $0 |
+| **3** | Phase 3 | 프롬프트 엔지니어링 고도화 | $0 |
+| **4** | Phase 4 | STT 품질 개선 (선택) | 서버 리소스 |
 
-> **권장**: Phase 3 → Phase 2를 먼저 적용하여 **비용 없이** 품질 향상을 확인한 후, 필요 시 Phase 1(외부 API) 도입을 결정합니다.
+> **모든 Phase가 추가 비용 $0**. Phase 1만 적용해도 즉각적인 품질 향상이 기대됩니다.
 
 ---
 
-## 8. 전달 사항 (To Owner)
+## 9. 리스크 및 대응
 
-### 의사결정 필요 항목
-1. **AI Provider 선택**: Claude API vs GPT API vs Ollama 유지 → 비용 대비 품질 트레이드오프
-2. **API Key 발급**: 외부 API 사용 시 Anthropic/OpenAI 계정 생성 및 API Key 발급 필요
-3. **월 예산**: AI 분석 비용에 대한 월간 예산 한도 설정
-4. **우선 적용 범위**: 전체 통화 vs 특정 조건(30초 이상, 특정 팀 등)만 고품질 분석 적용
+| 리스크 | 대응 |
+|--------|------|
+| CLI 도구 네트워크 의존 | Ollama Fallback 자동 전환 |
+| CLI 구독 만료 | 환경변수로 즉시 Ollama 전환 가능 |
+| Docker ↔ 호스트 CLI 접근 | 워커를 호스트에서 별도 실행 (선택지 A) |
+| stdout 파싱 이슈 | Claude `--json-schema` + `--output-format json` 활용 |
+| 긴 텍스트 전달 | stdin 파이프 (크기 제한 없음) |
