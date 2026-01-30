@@ -17,11 +17,12 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'exaone3.5:2.4b';
 // ===== CLI 실행 기반 함수 =====
 
 /**
- * CLI 도구를 spawn으로 실행, stdin으로 프롬프트 전달
+ * CLI 도구를 spawn으로 실행
  * - Shell을 거치지 않으므로 Injection 위험 없음
- * - stdin으로 전달하므로 긴 텍스트, 특수문자 안전
+ * - stdinData가 있으면 stdin으로 전달 (Claude -p 모드)
+ * - 없으면 positional argument 방식 (Gemini, Codex)
  */
-function execCli(bin, args, prompt, timeoutMs = 180000) {
+function execCli(bin, args, stdinData, timeoutMs = 180000) {
   return new Promise((resolve, reject) => {
     const proc = spawn(bin, args, {
       env: {
@@ -51,8 +52,10 @@ function execCli(bin, args, prompt, timeoutMs = 180000) {
       reject(new Error(`CLI spawn error: ${err.message}`));
     });
 
-    // stdin으로 프롬프트 전달 (핵심 안전장치)
-    proc.stdin.write(prompt);
+    // stdin 데이터 전달 (Claude -p 모드에서 사용)
+    if (stdinData) {
+      proc.stdin.write(stdinData);
+    }
     proc.stdin.end();
   });
 }
@@ -75,29 +78,32 @@ async function callClaude(prompt, options = {}) {
 
 /**
  * Gemini CLI 호출
- * positional prompt가 아닌 stdin으로 전달 (one-shot 모드)
+ * positional argument로 프롬프트 전달 (one-shot 모드)
+ * spawn이므로 shell escaping 불필요, 긴 텍스트도 안전
  */
 async function callGemini(prompt, options = {}) {
   const timeout = options.timeout || 180000;
 
   console.log(`[AI-CLI] Gemini 호출 중...`);
-  const result = await execCli(path.join(CLI_BIN, 'gemini'), [], prompt, timeout);
-  // Gemini는 "Loaded cached credentials." 등 stderr 출력이 있을 수 있음
+  // Gemini CLI: gemini "prompt" (positional argument)
+  const result = await execCli(path.join(CLI_BIN, 'gemini'), [prompt], null, timeout);
   console.log(`[AI-CLI] Gemini 응답: ${result.length} chars`);
   return result;
 }
 
 /**
  * Codex (OpenAI) CLI 호출
+ * codex exec "prompt" (positional argument)
  */
 async function callCodex(prompt, options = {}) {
   const timeout = options.timeout || 180000;
 
   console.log(`[AI-CLI] Codex 호출 중...`);
+  // Codex CLI: codex exec "prompt" (positional argument)
   const result = await execCli(
     path.join(CLI_BIN, 'codex'),
-    ['exec'],
-    prompt,
+    ['exec', prompt],
+    null,
     timeout
   );
   console.log(`[AI-CLI] Codex 응답: ${result.length} chars`);
