@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import useSocket from '../hooks/useSocket'
-import { formatTime } from '../utils'
+import { formatTime, formatPhoneNumber } from '../utils'
 import { DirectionBadge, EmotionBadge, ScoreBadge, AiStatusBadge } from '../components/Badges'
 import DetailModal from '../components/DetailModal'
 
@@ -54,6 +54,31 @@ export default function History() {
     const set = new Set()
     calls.forEach(c => { if (c.team_name) set.add(c.team_name) })
     return Array.from(set).sort()
+  }, [calls])
+
+  // Calculate call counts per phone number (sorted by time)
+  const callCountMap = useMemo(() => {
+    const map = {} // phone -> array of call IDs sorted by time
+    // Sort all calls by created_at ascending
+    const sorted = [...calls].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+
+    sorted.forEach(call => {
+      if (!call.phone_number) return
+      if (!map[call.phone_number]) map[call.phone_number] = []
+      map[call.phone_number].push(call.id)
+    })
+
+    // Create a lookup: callId -> count index
+    const countLookup = {}
+    Object.keys(map).forEach(phone => {
+      const ids = map[phone]
+      if (ids.length > 1) { // Only count if more than 1 call
+        ids.forEach((id, index) => {
+          countLookup[id] = index + 1 // 1-based index
+        })
+      }
+    })
+    return countLookup
   }, [calls])
 
   // Client-side dedup + filtering
@@ -181,7 +206,12 @@ export default function History() {
                       {call.customer_name || ''}
                     </td>
                     <td className="px-4 py-2.5 text-sm text-ink-secondary font-mono">
-                      {call.phone_number || ''}
+                      <span>{formatPhoneNumber(call.phone_number)}</span>
+                      {callCountMap[call.id] && (
+                        <span className="text-[8px] text-ink-tertiary ml-1">
+                          ({callCountMap[call.id]})
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 text-sm text-ink-secondary max-w-[260px] truncate">
                       {call.ai_summary || call.summary || ''}

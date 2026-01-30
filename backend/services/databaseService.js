@@ -54,6 +54,7 @@ const initDB = async () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       call_id INTEGER,
       transcript TEXT,
+      raw_transcript TEXT,
       summary TEXT,
       sentiment TEXT,
       sentiment_score REAL,
@@ -73,6 +74,7 @@ const initDB = async () => {
   addColumnIfNotExists('calls', 'ai_status', "TEXT DEFAULT 'pending'");
   addColumnIfNotExists('calls', 'team_name', 'TEXT');
   addColumnIfNotExists('calls', 'start_time', 'TEXT');
+  addColumnIfNotExists('analysis_results', 'raw_transcript', 'TEXT');
 
   // Unique index to prevent duplicate uploads (same uploader + same call start time)
   try {
@@ -91,6 +93,49 @@ const initDB = async () => {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Teams table: name, description, evaluation_prompt
+  db.run(`
+    CREATE TABLE IF NOT EXISTS teams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      description TEXT DEFAULT '',
+      evaluation_prompt TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Migration: seed teams from existing agent team_name values
+  try {
+    const existingTeams = db.exec(`SELECT DISTINCT team_name FROM agents WHERE team_name IS NOT NULL AND team_name != ''`);
+    if (existingTeams[0]) {
+      for (const row of existingTeams[0].values) {
+        const teamName = row[0];
+        try {
+          db.run(
+            `INSERT OR IGNORE INTO teams (name) VALUES (?)`,
+            [teamName]
+          );
+        } catch (e) { /* already exists */ }
+      }
+    }
+    // Also seed from calls table team_name
+    const callTeams = db.exec(`SELECT DISTINCT team_name FROM calls WHERE team_name IS NOT NULL AND team_name != ''`);
+    if (callTeams[0]) {
+      for (const row of callTeams[0].values) {
+        const teamName = row[0];
+        try {
+          db.run(
+            `INSERT OR IGNORE INTO teams (name) VALUES (?)`,
+            [teamName]
+          );
+        } catch (e) { /* already exists */ }
+      }
+    }
+  } catch (e) {
+    console.log("Team migration note:", e.message);
+  }
 
   saveDatabase();
   console.log("Database initialized");
@@ -223,7 +268,7 @@ module.exports = {
         c.uploader_name, c.uploader_phone,
         c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
         c.team_name, c.start_time,
-        a.transcript, a.summary, a.sentiment, a.sentiment_score,
+        a.transcript, a.raw_transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
        LEFT JOIN analysis_results a ON c.id = a.call_id
@@ -239,14 +284,15 @@ module.exports = {
 
     // Save to analysis_results table
     db.run(
-      `INSERT INTO analysis_results (call_id, transcript, summary, sentiment, sentiment_score, checklist)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO analysis_results (call_id, transcript, raw_transcript, summary, sentiment, sentiment_score, checklist)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         callId,
         results.transcript || '',
+        results.raw_transcript || null,
         results.summary || '',
         results.sentiment || '',
-        results.sentiment_score || null,
+        results.sentiment_score ?? null,
         results.checklist ? JSON.stringify(results.checklist) : null
       ]
     );
@@ -262,7 +308,7 @@ module.exports = {
        WHERE id = ?`,
       [
         results.sentiment || '',
-        results.ai_score || null,
+        results.ai_score ?? null,
         results.summary || '',
         callId
       ]
@@ -300,7 +346,7 @@ module.exports = {
         c.uploader_name, c.uploader_phone,
         c.customer_name, c.ai_emotion, c.ai_score, c.ai_summary, c.ai_status,
         c.team_name, c.start_time,
-        a.transcript, a.summary, a.sentiment, a.sentiment_score,
+        a.transcript, a.raw_transcript, a.summary, a.sentiment, a.sentiment_score,
         a.checklist, a.analyzed_at
        FROM calls c
        LEFT JOIN analysis_results a ON c.id = a.call_id
@@ -453,6 +499,20 @@ module.exports = {
     return { changes: db.getRowsModified() };
   },
 
+  // Get team name for a call (from calls table or agents table fallback)
+  getCallTeam: (callId) => {
+    if (!db) return null;
+    const result = db.exec(
+      `SELECT COALESCE(c.team_name, a.team_name) as team_name
+       FROM calls c
+       LEFT JOIN agents a ON c.uploader_phone = a.phone_number
+       WHERE c.id = ?`,
+      [callId]
+    );
+    if (!result[0] || !result[0].values.length) return null;
+    return result[0].values[0][0];
+  },
+
   getAgentTeam: (phone) => {
     if (!db) return null;
     const result = db.exec(
@@ -461,6 +521,114 @@ module.exports = {
     );
     if (!result[0] || !result[0].values.length) return null;
     return result[0].values[0][0];
+  },
+
+  // ========== Teams CRUD ==========
+  getAllTeams: () => {
+    if (!db) return [];
+    const result = db.exec("SELECT * FROM teams ORDER BY name ASC");
+    return rowsToObjects(result);
+  },
+
+  getTeamByName: (name) => {
+    if (!db) return null;
+    const result = db.exec("SELECT * FROM teams WHERE name = ?", [name]);
+    if (!result[0] || !result[0].values.length) return null;
+    const columns = result[0].columns;
+    const values = result[0].values[0];
+    const row = {};
+    columns.forEach((col, idx) => { row[col] = values[idx]; });
+    return row;
+  },
+
+  createTeam: (data) => {
+    if (!db) throw new Error("Database not initialized");
+    const { name, description, evaluation_prompt } = data;
+    if (!name || !name.trim()) throw new Error("Team name is required");
+    db.run(
+      `INSERT INTO teams (name, description, evaluation_prompt) VALUES (?, ?, ?)`,
+      [name.trim(), description || '', evaluation_prompt || '']
+    );
+    const result = db.exec("SELECT last_insert_rowid() as id");
+    const id = result[0]?.values[0]?.[0] || 0;
+    saveDatabase();
+    return { id };
+  },
+
+  updateTeam: (id, data) => {
+    if (!db) throw new Error("Database not initialized");
+    const { name, description, evaluation_prompt } = data;
+    if (name !== undefined && !name.trim()) throw new Error("팀 이름은 비워둘 수 없습니다");
+
+    db.run("BEGIN TRANSACTION");
+    try {
+      // Get old name for cascading update
+      const oldResult = db.exec("SELECT name FROM teams WHERE id = ?", [id]);
+      const oldName = oldResult[0]?.values?.[0]?.[0];
+
+      db.run(
+        `UPDATE teams SET name = ?, description = ?, evaluation_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [name?.trim() || oldName, description ?? '', evaluation_prompt ?? '', id]
+      );
+      const changes = db.getRowsModified();
+
+      // Cascade team name update to agents and calls tables
+      if (changes > 0 && oldName && name && name.trim() !== oldName) {
+        db.run(`UPDATE agents SET team_name = ? WHERE team_name = ?`, [name.trim(), oldName]);
+        db.run(`UPDATE calls SET team_name = ? WHERE team_name = ?`, [name.trim(), oldName]);
+      }
+
+      db.run("COMMIT");
+      saveDatabase();
+      return { changes };
+    } catch (e) {
+      try { db.run("ROLLBACK"); } catch (_) { }
+      throw e;
+    }
+  },
+
+  deleteTeam: (id) => {
+    if (!db) throw new Error("Database not initialized");
+
+    db.run("BEGIN TRANSACTION");
+    try {
+      const teamResult = db.exec("SELECT name FROM teams WHERE id = ?", [id]);
+      if (!teamResult[0]?.values?.length) {
+        db.run("ROLLBACK");
+        return { changes: 0 };
+      }
+      const teamName = teamResult[0].values[0][0];
+
+      const agentCount = db.exec(
+        "SELECT COUNT(*) FROM agents WHERE team_name = ?", [teamName]
+      );
+      const count = agentCount[0]?.values?.[0]?.[0] || 0;
+      if (count > 0) {
+        db.run("ROLLBACK");
+        throw new Error(`팀에 ${count}명의 직원이 배정되어 있어 삭제할 수 없습니다. 먼저 직원의 팀을 변경해주세요.`);
+      }
+
+      db.run("DELETE FROM teams WHERE id = ?", [id]);
+      const changes = db.getRowsModified();
+      db.run("COMMIT");
+      saveDatabase();
+      return { changes };
+    } catch (e) {
+      try { db.run("ROLLBACK"); } catch (_) { }
+      throw e;
+    }
+  },
+
+  // Get evaluation prompt for a team name
+  getTeamEvaluationPrompt: (teamName) => {
+    if (!db || !teamName) return null;
+    const result = db.exec(
+      "SELECT evaluation_prompt FROM teams WHERE name = ?",
+      [teamName]
+    );
+    if (!result[0]?.values?.length) return null;
+    const prompt = result[0].values[0][0];
+    return (prompt && prompt.trim()) ? prompt : null;
   },
 
   // ========== Analytics ==========
@@ -487,6 +655,37 @@ module.exports = {
     return rowsToObjects(result);
   },
 
+  // Per-agent daily stats map (keyed by uploader_phone)
+  getAgentDailyStatsMap: () => {
+    if (!db) return {};
+    const today = new Date().toISOString().split('T')[0];
+    const result = db.exec(
+      `SELECT
+        uploader_phone,
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
+        SUM(CASE WHEN direction = 'IN' THEN 1 ELSE 0 END) as incoming,
+        SUM(CASE WHEN direction = 'IN' AND (duration = 0 OR duration IS NULL) THEN 1 ELSE 0 END) as missed,
+        COALESCE(SUM(duration), 0) as total_duration,
+        MAX(created_at) as last_call_at
+       FROM calls
+       WHERE date(created_at) = date(?) AND uploader_phone IS NOT NULL
+       GROUP BY uploader_phone`,
+      [today]
+    );
+
+    const statsMap = {};
+    if (result[0]) {
+      const cols = result[0].columns;
+      result[0].values.forEach(row => {
+        const obj = {};
+        cols.forEach((col, idx) => { obj[col] = row[idx]; });
+        statsMap[obj.uploader_phone] = obj;
+      });
+    }
+    return statsMap;
+  },
+
   getDirectionAnalytics: () => {
     if (!db) return [];
     const result = db.exec(
@@ -495,5 +694,86 @@ module.exports = {
        GROUP BY direction`
     );
     return rowsToObjects(result);
+  },
+
+  // ========== Reports: period-based stats ==========
+  getReportStats: (startDate, endDate, teamFilter) => {
+    if (!db) return { agents: [], teams: [], globalStats: {} };
+
+    const teamClause = teamFilter
+      ? `AND COALESCE(a.team_name, c.team_name, '미지정') = ?`
+      : '';
+    const params = teamFilter
+      ? [startDate, endDate, teamFilter]
+      : [startDate, endDate];
+
+    // Per-agent stats
+    const agentResult = db.exec(
+      `SELECT
+        c.uploader_phone,
+        MAX(c.uploader_name) as uploader_name,
+        COALESCE(MAX(a.team_name), MAX(c.team_name), '미지정') as team_name,
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN c.direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
+        SUM(CASE WHEN c.direction = 'IN' THEN 1 ELSE 0 END) as incoming,
+        SUM(CASE WHEN c.direction = 'IN' AND (c.duration = 0 OR c.duration IS NULL) THEN 1 ELSE 0 END) as missed,
+        COALESCE(SUM(c.duration), 0) as total_duration,
+        ROUND(AVG(CASE WHEN c.ai_score IS NOT NULL THEN c.ai_score END), 1) as avg_score
+       FROM calls c
+       LEFT JOIN agents a ON c.uploader_phone = a.phone_number
+       WHERE date(c.created_at) BETWEEN date(?) AND date(?)
+         AND c.uploader_phone IS NOT NULL
+         ${teamClause}
+       GROUP BY c.uploader_phone
+       ORDER BY avg_score DESC, total_calls DESC`,
+      params
+    );
+    const agents = rowsToObjects(agentResult);
+
+    // Team summary stats
+    const teamResult = db.exec(
+      `SELECT
+        COALESCE(a.team_name, c.team_name, '미지정') as team_name,
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN c.direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
+        SUM(CASE WHEN c.direction = 'IN' THEN 1 ELSE 0 END) as incoming,
+        SUM(CASE WHEN c.direction = 'IN' AND (c.duration = 0 OR c.duration IS NULL) THEN 1 ELSE 0 END) as missed,
+        COALESCE(SUM(c.duration), 0) as total_duration,
+        ROUND(AVG(CASE WHEN c.ai_score IS NOT NULL THEN c.ai_score END), 1) as avg_score,
+        COUNT(DISTINCT c.uploader_phone) as agent_count
+       FROM calls c
+       LEFT JOIN agents a ON c.uploader_phone = a.phone_number
+       WHERE date(c.created_at) BETWEEN date(?) AND date(?)
+         AND c.uploader_phone IS NOT NULL
+         ${teamClause}
+       GROUP BY COALESCE(a.team_name, c.team_name, '미지정')
+       ORDER BY total_calls DESC`,
+      params
+    );
+    const teams = rowsToObjects(teamResult);
+
+    // Global stats
+    const globalResult = db.exec(
+      `SELECT
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN c.direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
+        SUM(CASE WHEN c.direction = 'IN' THEN 1 ELSE 0 END) as incoming,
+        SUM(CASE WHEN c.direction = 'IN' AND (c.duration = 0 OR c.duration IS NULL) THEN 1 ELSE 0 END) as missed,
+        COALESCE(SUM(c.duration), 0) as total_duration,
+        ROUND(AVG(CASE WHEN c.ai_score IS NOT NULL THEN c.ai_score END), 1) as avg_score,
+        COUNT(DISTINCT c.uploader_phone) as agent_count
+       FROM calls c
+       LEFT JOIN agents a ON c.uploader_phone = a.phone_number
+       WHERE date(c.created_at) BETWEEN date(?) AND date(?)
+         AND c.uploader_phone IS NOT NULL
+         ${teamClause}`,
+      params
+    );
+    const globalStats = rowsToObjects(globalResult)[0] || {
+      total_calls: 0, outgoing: 0, incoming: 0, missed: 0,
+      total_duration: 0, avg_score: null, agent_count: 0
+    };
+
+    return { agents, teams, globalStats };
   }
 };
