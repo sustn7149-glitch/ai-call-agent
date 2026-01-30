@@ -80,10 +80,10 @@ class QueueService {
         }
       },
       settings: {
-        // N100 CPU + Whisper medium 모델: 긴 녹음파일 STT가 10분 이상 소요
-        lockDuration: 900000,      // 15분 (기본 30초 → job stall 방지)
-        stalledInterval: 900000,   // 15분마다 stall 체크
-        lockRenewTime: 450000,     // 7.5분마다 lock 자동 갱신
+        // N100 CPU + Whisper medium 모델: 대용량 녹음파일 STT가 20분+ 소요 가능
+        lockDuration: 1500000,      // 25분 (STT 20분 + Claude AI 5분 여유)
+        stalledInterval: 1500000,   // 25분마다 stall 체크
+        lockRenewTime: 720000,      // 12분마다 lock 자동 갱신
       },
     });
 

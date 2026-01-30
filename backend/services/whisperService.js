@@ -30,7 +30,7 @@ const RETRY_DELAY = 2000; // 재시도 간격 (밀리초)
 // 왜 타임아웃이 필요한가?
 // - 큰 녹취 파일은 STT 처리에 시간이 오래 걸림
 // - 무한 대기 방지
-const REQUEST_TIMEOUT = 10 * 60 * 1000; // 10분 (600초) - medium 모델 대용량 파일 처리 대응
+const REQUEST_TIMEOUT = 20 * 60 * 1000; // 20분 (1200초) - N100 CPU + medium 모델 대용량 파일 처리 대응
 
 /**
  * @function sleep
