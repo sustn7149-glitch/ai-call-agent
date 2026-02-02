@@ -163,7 +163,9 @@ if __name__ == "__main__":
 
     try:
         from waitress import serve
-        serve(app, host="0.0.0.0", port=PORT, threads=1)
+        # threads=2: health 체크가 STT 처리 중에도 응답 가능
+        # /asr 동시 실행은 threading.Lock이 차단 (503 반환)
+        serve(app, host="0.0.0.0", port=PORT, threads=2)
     except ImportError:
         print("Warning: waitress not installed, using Flask dev server")
         app.run(host="0.0.0.0", port=PORT, debug=False)
