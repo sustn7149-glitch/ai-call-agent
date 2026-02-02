@@ -13,60 +13,61 @@ const fs = require("fs");
 const path = require("path");
 
 // ===== 환경 변수 로드 =====
-// 왜 환경 변수를 사용하는가?
-// - Docker 환경과 로컬 환경에서 다른 Whisper 주소 사용 가능
-// - 테스트 시 Mock 서버로 쉽게 전환 가능
 const WHISPER_URL = process.env.WHISPER_URL || "http://localhost:9000/asr";
-
-// ===== 재시도 설정 =====
-// 왜 재시도가 필요한가?
-// - Whisper 서버가 일시적으로 과부하 상태일 수 있음
-// - 네트워크 일시적 오류 복구
-// - 안정적인 서비스 제공
-const MAX_RETRIES = 3; // 최대 재시도 횟수
-const RETRY_DELAY = 2000; // 재시도 간격 (밀리초)
+const WHISPER_HEALTH_URL = WHISPER_URL.replace("/asr", "/health");
 
 // ===== 타임아웃 설정 =====
-// 왜 타임아웃이 필요한가?
-// - 큰 녹취 파일은 STT 처리에 시간이 오래 걸림
-// - 무한 대기 방지
-const REQUEST_TIMEOUT = 20 * 60 * 1000; // 20분 (1200초) - N100 CPU + medium 모델 대용량 파일 처리 대응
+const REQUEST_TIMEOUT = 20 * 60 * 1000; // 20분 - N100 CPU + medium 모델 대용량 파일 처리 대응
 
-/**
- * @function sleep
- * @description 비동기 대기 함수
- * @param {number} ms - 대기 시간 (밀리초)
- * @returns {Promise<void>}
- *
- * 왜 sleep 함수가 필요한가?
- * - 재시도 시 서버 복구 시간 확보 (지수 백오프 구현)
- * - setTimeout을 Promise로 래핑하여 async/await 사용 가능
- */
+// ===== STT busy 대기 설정 =====
+// BUSY_MAX_WAIT + REQUEST_TIMEOUT < Bull lockDuration(25분) 이어야 함
+// 5분 대기 + 20분 처리 = 25분 ≤ lockDuration
+const BUSY_CHECK_INTERVAL = 10000; // 10초마다 busy 상태 체크
+const BUSY_MAX_WAIT = 5 * 60 * 1000; // 최대 5분 대기 (STT busy 상태일 때)
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
+ * @function waitForSTTReady
+ * @description STT 서버가 idle 상태가 될 때까지 대기 (busy면 폴링)
+ * @returns {Promise<void>}
+ */
+async function waitForSTTReady() {
+  const startWait = Date.now();
+
+  while (Date.now() - startWait < BUSY_MAX_WAIT) {
+    try {
+      const res = await axios.get(WHISPER_HEALTH_URL, { timeout: 5000 });
+      if (res.data && res.data.is_busy) {
+        console.log(`⏳ [Whisper] STT 서버 처리 중... ${BUSY_CHECK_INTERVAL / 1000}초 후 재확인`);
+        await sleep(BUSY_CHECK_INTERVAL);
+        continue;
+      }
+      return; // STT가 idle 상태 → 요청 가능
+    } catch (error) {
+      if (error.code === "ECONNREFUSED") {
+        throw new Error("Whisper 서버에 연결할 수 없습니다. Docker 컨테이너가 실행 중인지 확인하세요.");
+      }
+      // health 엔드포인트 일시 오류 → 잠시 대기 후 재시도
+      console.log(`⏳ [Whisper] Health check 실패, ${BUSY_CHECK_INTERVAL / 1000}초 후 재시도...`);
+      await sleep(BUSY_CHECK_INTERVAL);
+    }
+  }
+
+  throw new Error(`STT 서버가 ${BUSY_MAX_WAIT / 60000}분 동안 busy 상태. 처리 건너뜀.`);
+}
+
+/**
  * @function transcribe
  * @description Whisper API를 호출하여 오디오 파일을 텍스트로 변환
+ *   - Bull Queue가 재시도를 담당하므로 내부 재시도 없음 (1회 시도)
+ *   - 요청 전 STT 서버 busy 상태 확인 (동시 요청 방지)
  * @param {string} filePath - 변환할 오디오 파일의 절대 경로
- * @returns {Promise<Object>} 변환 결과
- * @returns {string} result.text - 변환된 텍스트
- * @returns {number} result.duration - 처리 시간 (초)
- *
- * 왜 이 함수가 필요한가?
- * - 통화 녹취 파일을 텍스트로 변환하여 LLM 분석 가능
- * - 다른 서비스에서 간단히 호출 가능한 인터페이스 제공
- *
- * 사용 예시:
- * const { text, duration } = await transcribe('/path/to/audio.mp3');
- * console.log('변환된 텍스트:', text);
+ * @returns {Promise<Object>} { text, duration }
  */
 async function transcribe(filePath) {
-  // ===== 입력 검증 =====
-  // 왜 검증이 필요한가?
-  // - 잘못된 파일 경로로 인한 에러 사전 방지
-  // - 명확한 에러 메시지로 디버깅 용이
   if (!filePath) {
     throw new Error("[Whisper] 파일 경로가 제공되지 않았습니다.");
   }
@@ -80,111 +81,64 @@ async function transcribe(filePath) {
 
   console.log(`🎤 [Whisper] STT 시작: ${path.basename(filePath)} (${fileSizeMB}MB)`);
 
-  // ===== 재시도 로직 =====
-  // 왜 for 루프로 재시도를 구현하는가?
-  // - 명확한 재시도 횟수 제어
-  // - 각 시도마다 다른 로직 적용 가능 (지수 백오프)
-  let lastError = null;
+  // STT 서버가 ready 상태인지 확인 (busy면 대기)
+  await waitForSTTReady();
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  const startTime = Date.now();
+
+  const formData = new FormData();
+  formData.append("audio_file", fs.createReadStream(filePath));
+
+  console.log(`📡 [Whisper] API 요청: ${WHISPER_URL}`);
+
+  // STT 요청 전송 (503 수신 시 busy 대기 후 1회 재시도)
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const startTime = Date.now();
+      const reqFormData = (attempt === 1) ? formData : new FormData();
+      if (attempt > 1) {
+        reqFormData.append("audio_file", fs.createReadStream(filePath));
+      }
 
-      // ===== FormData 생성 =====
-      // 왜 FormData를 사용하는가?
-      // - Whisper API는 multipart/form-data로 파일 전송 요구
-      // - 파일 스트림을 효율적으로 전송 (메모리 절약)
-      const formData = new FormData();
-      formData.append("audio_file", fs.createReadStream(filePath));
-
-      // ===== API 요청 전송 =====
-      // 왜 axios를 사용하는가?
-      // - Promise 기반으로 async/await 사용 가능
-      // - 자동 JSON 파싱
-      // - 요청/응답 인터셉터로 로깅 확장 가능
-      console.log(
-        `📡 [Whisper] API 요청 (시도 ${attempt}/${MAX_RETRIES}): ${WHISPER_URL}`
-      );
-
-      const response = await axios.post(WHISPER_URL, formData, {
-        headers: {
-          ...formData.getHeaders(), // Content-Type: multipart/form-data; boundary=...
-        },
-        timeout: REQUEST_TIMEOUT, // 5분 타임아웃
-        maxContentLength: Infinity, // 응답 크기 제한 없음
-        maxBodyLength: Infinity, // 요청 본문 크기 제한 없음
+      const response = await axios.post(WHISPER_URL, reqFormData, {
+        headers: { ...reqFormData.getHeaders() },
+        timeout: REQUEST_TIMEOUT,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
       });
 
-      const endTime = Date.now();
-      const duration = ((endTime - startTime) / 1000).toFixed(2); // 초 단위
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
 
-      // ===== 응답 검증 =====
-      // 왜 응답 검증이 필요한가?
-      // - Whisper API가 200 OK를 반환해도 실제 텍스트가 없을 수 있음
-      // - 빈 응답은 에러로 처리하여 재시도
       if (!response.data || !response.data.text) {
         throw new Error("Whisper API 응답에 텍스트가 없습니다.");
       }
 
       const transcribedText = response.data.text.trim();
 
-      console.log(
-        `✅ [Whisper] STT 완료: ${transcribedText.length}자 변환 (${duration}초 소요)`
-      );
+      console.log(`✅ [Whisper] STT 완료: ${transcribedText.length}자 변환 (${duration}초 소요)`);
       console.log(`📝 [Whisper] 변환 텍스트 미리보기: ${transcribedText.substring(0, 100)}...`);
 
-      // ===== 성공 응답 반환 =====
       return {
         text: transcribedText,
         duration: parseFloat(duration),
       };
     } catch (error) {
-      lastError = error;
+      // 503 Busy → STT가 다른 파일 처리 중, busy 대기 후 1회 재시도
+      if (error.response && error.response.status === 503 && attempt === 1) {
+        console.log(`⏳ [Whisper] STT busy (503), 대기 후 재시도...`);
+        await waitForSTTReady();
+        continue;
+      }
 
-      // ===== 에러 로깅 =====
-      // 왜 상세한 로깅이 필요한가?
-      // - 네트워크 오류 vs Whisper 서버 오류 구분
-      // - 디버깅 시 원인 파악 용이
       const errorMessage = error.response
         ? `HTTP ${error.response.status}: ${error.response.statusText}`
         : error.code === "ECONNREFUSED"
         ? "Whisper 서버에 연결할 수 없습니다. Docker 컨테이너가 실행 중인지 확인하세요."
-        : error.code === "ETIMEDOUT"
-        ? `요청 타임아웃 (${REQUEST_TIMEOUT / 1000}초 초과)`
         : error.message;
 
-      console.error(
-        `❌ [Whisper] STT 실패 (시도 ${attempt}/${MAX_RETRIES}): ${errorMessage}`
-      );
-
-      // ===== 재시도 로직 =====
-      // 왜 마지막 시도에서는 재시도하지 않는가?
-      // - 불필요한 대기 시간 제거
-      // - 즉시 에러를 상위 호출자에게 전달
-      if (attempt < MAX_RETRIES) {
-        // 지수 백오프: 2초 → 4초 → 8초
-        const delayMs = RETRY_DELAY * attempt;
-        console.log(`⏳ [Whisper] ${delayMs / 1000}초 후 재시도...`);
-        await sleep(delayMs);
-      }
+      console.error(`❌ [Whisper] STT 실패: ${errorMessage}`);
+      throw new Error(`Whisper STT 실패: ${errorMessage}`);
     }
   }
-
-  // ===== 모든 재시도 실패 =====
-  // 왜 별도 에러 메시지를 생성하는가?
-  // - 재시도 횟수를 명확히 표시
-  // - 상위 호출자가 적절히 처리할 수 있도록 정보 제공
-  const finalErrorMessage = lastError.response
-    ? `Whisper API 호출 실패: HTTP ${lastError.response.status}`
-    : lastError.code === "ECONNREFUSED"
-    ? "Whisper 서버에 연결할 수 없습니다. Docker 컨테이너를 확인하세요."
-    : `Whisper STT 실패: ${lastError.message}`;
-
-  console.error(
-    `🚨 [Whisper] ${MAX_RETRIES}번 재시도 후 최종 실패: ${finalErrorMessage}`
-  );
-
-  throw new Error(finalErrorMessage);
 }
 
 // ===== 내보내기 =====

@@ -137,15 +137,15 @@ class QueueService {
 
     // ===== 작업 옵션 설정 =====
     const jobOptions = {
-      // 실패 시 최대 3번 재시도
-      // 왜 3번인가? - 일시적 오류(네트워크, Whisper 과부하) 복구 기회 제공
-      attempts: 3,
+      // 실패 시 최대 2번 재시도
+      // whisperService 내부 재시도 제거 → Bull만 재시도 담당 (증폭 방지)
+      attempts: 2,
 
-      // 지수 백오프: 1초 → 2초 → 4초 간격으로 재시도
-      // 왜 지수 백오프인가? - 서버 복구 시간 확보, 폭주 방지
+      // 지수 백오프: 30초 → 60초 간격으로 재시도
+      // STT 서버 복구 시간 확보 (짧은 간격은 과부하 악화)
       backoff: {
         type: "exponential",
-        delay: 1000,
+        delay: 30000,
       },
 
       // 완료된 작업은 100개만 유지
@@ -343,7 +343,18 @@ class QueueService {
 
     // 작업 실패 이벤트
     this.analysisQueue.on("failed", (job, err) => {
-      console.error(`❌ [Queue] 작업 실패: Job #${job.id}`, err.message);
+      console.error(`❌ [Queue] 작업 실패: Job #${job.id} (시도 ${job.attemptsMade}/${job.opts.attempts})`, err.message);
+
+      // 모든 Bull 재시도 소진 → 영구 실패 마킹 (worker에서 못 처리한 경우 안전장치)
+      if (job.attemptsMade >= job.opts.attempts && job.data.callId) {
+        try {
+          const databaseService = require("./databaseService");
+          databaseService.markAnalysisFailed(job.data.callId, err.message);
+          console.log(`🔒 [Queue] Job #${job.id} 영구 실패 마킹 완료 (재큐잉 방지)`);
+        } catch (e) {
+          console.error(`[Queue] markAnalysisFailed 실패:`, e.message);
+        }
+      }
 
       if (this.io) {
         this.io.emit("queue:job-failed", {

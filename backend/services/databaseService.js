@@ -382,6 +382,36 @@ module.exports = {
     saveDatabase();
   },
 
+  // 영구 실패한 분석 건을 재설정 (재분석 가능하게 함)
+  resetFailedAnalysis: () => {
+    if (!db) return { resetCount: 0 };
+    const countResult = db.exec(
+      `SELECT COUNT(*) FROM calls WHERE ai_status = 'failed' AND ai_analyzed = 1`
+    );
+    const count = countResult[0]?.values[0]?.[0] || 0;
+    if (count > 0) {
+      db.run(
+        `UPDATE calls SET ai_analyzed = 0, ai_status = 'pending', ai_summary = NULL
+         WHERE ai_status = 'failed' AND ai_analyzed = 1`
+      );
+      saveDatabase();
+    }
+    return { resetCount: count };
+  },
+
+  // 영구 실패 처리: ai_analyzed=1로 마킹하여 재큐잉 방지
+  markAnalysisFailed: (callId, reason) => {
+    if (!db) return;
+    const summary = reason
+      ? `분석 실패: ${reason.substring(0, 200)}`
+      : '분석 실패 (재시도 소진)';
+    db.run(
+      `UPDATE calls SET ai_analyzed = 1, ai_status = 'failed', ai_summary = ? WHERE id = ?`,
+      [summary, callId]
+    );
+    saveDatabase();
+  },
+
   getCallWithAnalysis: (callId) => {
     if (!db) return null;
 
@@ -448,7 +478,9 @@ module.exports = {
     const result = db.exec(
       `SELECT * FROM calls
        WHERE ai_analyzed = 0 AND recording_path IS NOT NULL
-       ORDER BY created_at ASC`
+         AND (ai_status IS NULL OR ai_status = 'pending' OR ai_status = 'processing')
+       ORDER BY created_at ASC
+       LIMIT 10`
     );
 
     return rowsToObjects(result);

@@ -111,7 +111,7 @@ services:
       redis:
         condition: service_healthy
       stt-server:
-        condition: service_started
+        condition: service_healthy
       ollama:
         condition: service_started
     networks:

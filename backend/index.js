@@ -447,6 +447,18 @@ app.get('/api/analytics/direction', (req, res) => {
 const queueRoutes = require('./routes/queueRoutes');
 app.use('/api/queue', queueRoutes);
 
+// 영구 실패한 분석 건을 재설정하여 재분석 가능하게 함
+app.post('/api/queue/reset-failed', async (req, res) => {
+  try {
+    if (!db) return res.status(500).json({ error: 'DB not ready' });
+    const result = db.resetFailedAnalysis();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[ResetFailed] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Requeue pending calls that aren't in the BullMQ queue
 app.post('/api/queue/requeue-pending', async (req, res) => {
   try {
@@ -496,13 +508,16 @@ db.ready().then(() => {
   server.listen(3000, '0.0.0.0', async () => {
     console.log('Server running on 0.0.0.0:3000');
 
-    // 시작 시 pending 분석 건 자동 재큐잉 (큐가 비어있을 때만)
+    // 시작 시 pending 분석 건 자동 재큐잉
+    // - 큐가 거의 비어있을 때만 실행 (5개 미만)
+    // - 최대 10건만 재큐잉 (DB 쿼리에서 LIMIT 10, failed 제외)
+    // - 과부하 방지: 서버 재시작 시 대량 재큐잉 차단
     try {
       const queueStats = await queueService.getQueueStats();
       const queuedCount = (queueStats.waiting || 0) + (queueStats.active || 0);
 
       if (queuedCount < 5) {
-        const pendingCalls = db.getPendingAnalysisCalls();
+        const pendingCalls = db.getPendingAnalysisCalls(); // LIMIT 10, failed 제외
         if (pendingCalls.length > 0) {
           let queued = 0;
           for (const call of pendingCalls) {
@@ -516,7 +531,7 @@ db.ready().then(() => {
               queued++;
             }
           }
-          console.log(`[Startup] ${queued} pending calls requeued for analysis`);
+          console.log(`[Startup] ${queued} pending calls requeued for analysis (max 10)`);
         }
       } else {
         console.log(`[Startup] Queue already has ${queuedCount} jobs, skipping requeue`);

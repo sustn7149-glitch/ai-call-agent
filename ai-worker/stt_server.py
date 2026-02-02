@@ -1,17 +1,23 @@
 # ===== AI Call Agent - Whisper STT Server =====
 # faster-whisper 기반 로컬 음성 인식 HTTP 서버
-# Docker 불필요 - Python 직접 실행
 #
 # 기존 whisperService.js와 100% 호환되는 API:
 #   POST /asr  (multipart: audio_file) -> { "text": "..." }
+#   GET /health -> { "status": "ok"|"busy", "is_busy": bool, ... }
+#
+# 과부하 방지:
+#   - threading.Lock으로 동시 처리 차단 (1건씩만 처리)
+#   - 처리 중 요청 시 503 반환
+#   - Waitress threads=1 (단일 스레드)
 #
 # 실행: python stt_server.py
-# 포트: 9000 (기존 Docker Whisper와 동일)
+# 포트: 9000
 
 import os
 import sys
 import tempfile
 import time
+import threading
 from flask import Flask, request, jsonify
 
 # ===== 설정 =====
@@ -22,9 +28,6 @@ LANGUAGE = "ko"        # 한국어 고정 (통화 녹음 전용)
 PORT = int(os.environ.get("STT_PORT", "9000"))
 
 # ===== 한국어 콜센터 도메인 Initial Prompt =====
-# Whisper에 한국어 콜센터 맥락을 제공하여 인식 정확도 향상
-# - 자주 등장하는 호칭, 인사말, 업무 용어를 포함
-# - 모델이 한국어 콜센터 대화 패턴을 기대하게 유도
 INITIAL_PROMPT = os.environ.get("WHISPER_INITIAL_PROMPT",
     "안녕하세요 고객님. 네, 상담원입니다. "
     "요금제 변경, 해지 방어, 신규 가입, 기기 변경, 번호 이동, "
@@ -35,6 +38,7 @@ INITIAL_PROMPT = os.environ.get("WHISPER_INITIAL_PROMPT",
 
 app = Flask(__name__)
 model = None
+processing_lock = threading.Lock()  # STT 동시 처리 방지 (thread-safe)
 
 
 def load_model():
@@ -55,47 +59,52 @@ def load_model():
 def asr():
     """
     음성 파일을 텍스트로 변환하는 API 엔드포인트
-    - Input:  multipart/form-data (audio_file)
-    - Output: { "text": "변환된 텍스트" }
+    - Lock 획득 실패 시 503 반환 (동시 요청 차단)
     """
-    if "audio_file" not in request.files:
-        return jsonify({"error": "audio_file is required"}), 400
+    # Lock으로 동시 처리 방지 (thread-safe, TOCTOU 방지)
+    if not processing_lock.acquire(blocking=False):
+        return jsonify({"error": "STT server is busy processing another file"}), 503
 
-    audio = request.files["audio_file"]
-    if not audio.filename:
-        return jsonify({"error": "Empty filename"}), 400
-
-    # 임시 파일로 저장
-    suffix = os.path.splitext(audio.filename)[1] or ".m4a"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp_path = None
     try:
+        if "audio_file" not in request.files:
+            return jsonify({"error": "audio_file is required"}), 400
+
+        audio = request.files["audio_file"]
+        if not audio.filename:
+            return jsonify({"error": "Empty filename"}), 400
+
+        # 임시 파일로 저장
+        suffix = os.path.splitext(audio.filename)[1] or ".m4a"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp_path = tmp.name
         audio.save(tmp)
         tmp.close()
 
-        file_size_mb = os.path.getsize(tmp.name) / (1024 * 1024)
+        file_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
         print(f"[STT] Processing: {audio.filename} ({file_size_mb:.2f}MB)")
 
         start = time.time()
 
-        # faster-whisper 변환 (Phase 4: 파라미터 최적화)
+        # faster-whisper 변환
         segments, info = model.transcribe(
-            tmp.name,
+            tmp_path,
             language=LANGUAGE,
             beam_size=5,
-            best_of=3,                          # 후보 중 최선 선택 (정확도 향상)
-            initial_prompt=INITIAL_PROMPT,       # 한국어 콜센터 도메인 힌트
-            condition_on_previous_text=True,     # 이전 세그먼트 문맥 연결 (대화 연속성)
-            vad_filter=True,                     # VAD로 무음 구간 건너뛰기
+            best_of=3,
+            initial_prompt=INITIAL_PROMPT,
+            condition_on_previous_text=True,
+            vad_filter=True,
             vad_parameters=dict(
-                min_silence_duration_ms=500,     # 500ms 이상 무음 구간 분리
-                speech_pad_ms=200,               # 음성 전후 200ms 패딩 (끊김 방지)
+                min_silence_duration_ms=500,
+                speech_pad_ms=200,
             ),
-            no_speech_threshold=0.6,             # 비음성 구간 필터링 임계값
-            compression_ratio_threshold=2.4,     # 반복/환각 텍스트 필터링
-            log_prob_threshold=-1.0,             # 저신뢰 세그먼트 필터링
+            no_speech_threshold=0.6,
+            compression_ratio_threshold=2.4,
+            log_prob_threshold=-1.0,
         )
 
-        # 세그먼트를 텍스트로 결합 (저신뢰 세그먼트 필터링)
+        # 세그먼트를 텍스트로 결합
         texts = []
         segment_count = 0
         for segment in segments:
@@ -122,18 +131,25 @@ def asr():
         return jsonify({"error": str(e)}), 500
 
     finally:
+        processing_lock.release()
         # 임시 파일 정리
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """헬스 체크 엔드포인트"""
+    """헬스 체크 + busy 상태 보고 엔드포인트
+    - Docker healthcheck: HTTP 200이면 healthy (busy 여부 무관)
+    - whisperService: is_busy 필드로 요청 전 busy 상태 확인
+    """
+    is_busy = processing_lock.locked()
     return jsonify({
-        "status": "ok",
+        "status": "busy" if is_busy else "ok",
+        "is_busy": is_busy,
         "model": MODEL_SIZE,
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
@@ -145,10 +161,9 @@ if __name__ == "__main__":
     load_model()
     print(f"STT Server running on 0.0.0.0:{PORT}")
 
-    # Windows에서는 waitress 사용 (안정적)
     try:
         from waitress import serve
-        serve(app, host="0.0.0.0", port=PORT, threads=2)
+        serve(app, host="0.0.0.0", port=PORT, threads=1)
     except ImportError:
         print("Warning: waitress not installed, using Flask dev server")
         app.run(host="0.0.0.0", port=PORT, debug=False)

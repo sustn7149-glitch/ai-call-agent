@@ -152,16 +152,26 @@ async function processAnalysisJob(job) {
       ...analysisResults,
     };
   } catch (error) {
-    console.error(`[Worker] Job #${job.id} FAILED: ${error.message}`);
+    console.error(`[Worker] Job #${job.id} FAILED (attempt ${job.attemptsMade}/${job.opts.attempts}): ${error.message}`);
 
     try {
       const { callId, filePath, phoneNumber } = job.data;
-      if (callId) {
-        databaseService.updateAiStatus(callId, 'failed');
-      } else {
+      let targetCallId = callId;
+
+      if (!targetCallId) {
         const allCalls = databaseService.getAllCalls();
         const match = allCalls.find(r => r[2] === phoneNumber && r[5] === filePath);
-        if (match) databaseService.updateAiStatus(match[0], 'failed');
+        if (match) targetCallId = match[0];
+      }
+
+      if (targetCallId) {
+        // 마지막 시도에서 실패 → 영구 실패 처리 (ai_analyzed=1로 마킹하여 재큐잉 방지)
+        if (job.attemptsMade >= job.opts.attempts) {
+          console.log(`[Worker] Job #${job.id} permanently failed. Marking ai_analyzed=1 to prevent requeue.`);
+          databaseService.markAnalysisFailed(targetCallId, error.message);
+        } else {
+          databaseService.updateAiStatus(targetCallId, 'failed');
+        }
       }
     } catch (e) {
       // ignore status update failure
