@@ -129,8 +129,9 @@ const initDB = async () => {
     )
   `);
 
-  // Migration: add team_id to agents
+  // Migration: add team_id and app_version to agents
   addColumnIfNotExists('agents', 'team_id', 'INTEGER');
+  addColumnIfNotExists('agents', 'app_version', 'TEXT');
 
   // ===== 백필: calls.team_name을 agents 테이블에서 매칭 =====
   try {
@@ -171,6 +172,17 @@ const initDB = async () => {
     }
   } catch (e) {
     console.error('[Migration] duration backfill error:', e.message);
+  }
+
+  // ===== 백필: ai_score=0인 데이터를 NULL로 변환 (일반 문의 제외) =====
+  try {
+    db.run(`UPDATE calls SET ai_score = NULL WHERE ai_score = 0`);
+    const scoreFixed = db.getRowsModified();
+    if (scoreFixed > 0) {
+      console.log(`[Migration] Set ai_score=NULL for ${scoreFixed} calls with score=0`);
+    }
+  } catch (e) {
+    console.error('[Migration] score backfill error:', e.message);
   }
 
   saveDatabase();
@@ -495,7 +507,7 @@ module.exports = {
         uploader_phone,
         COUNT(*) as total_calls,
         AVG(duration) as avg_duration,
-        AVG(ai_score) as avg_score,
+        AVG(CASE WHEN ai_score > 0 THEN ai_score END) as avg_score,
         MAX(COALESCE(start_time, created_at)) as last_activity
        FROM calls
        WHERE date(COALESCE(start_time, created_at)) = date(?) AND uploader_name IS NOT NULL AND recording_path IS NOT NULL
@@ -592,16 +604,17 @@ module.exports = {
     return { phone_number };
   },
 
-  // Auto-register agent from heartbeat (name only, preserves team assignment)
-  ensureAgentExists: (phoneNumber, name) => {
+  // Auto-register agent from heartbeat (name + appVersion, preserves team assignment)
+  ensureAgentExists: (phoneNumber, name, appVersion) => {
     if (!db || !phoneNumber) return;
     db.run(
-      `INSERT INTO agents (phone_number, name)
-       VALUES (?, ?)
+      `INSERT INTO agents (phone_number, name, app_version)
+       VALUES (?, ?, ?)
        ON CONFLICT(phone_number) DO UPDATE SET
          name = COALESCE(NULLIF(excluded.name, ''), agents.name),
+         app_version = COALESCE(excluded.app_version, agents.app_version),
          updated_at = CURRENT_TIMESTAMP`,
-      [phoneNumber, name || null]
+      [phoneNumber, name || null, appVersion || null]
     );
     saveDatabase();
   },
@@ -705,27 +718,57 @@ module.exports = {
   },
 
   // ========== Analytics ==========
-  getDailyAnalytics: () => {
+  getDailyAnalytics: (startDate, endDate) => {
     if (!db) return [];
+
+    // Default: last 30 days if no params given
+    const dateExpr = `date(COALESCE(start_time, created_at))`;
+    let whereClause;
+    let params;
+
+    if (startDate && endDate) {
+      whereClause = `${dateExpr} >= date(?) AND ${dateExpr} <= date(?)`;
+      params = [startDate, endDate];
+    } else {
+      whereClause = `${dateExpr} >= date('now', '-29 days')`;
+      params = [];
+    }
+
     const result = db.exec(
-      `SELECT date(created_at) as date, COUNT(*) as count
+      `SELECT ${dateExpr} as date,
+        COUNT(*) as count,
+        COALESCE(SUM(duration), 0) as total_duration,
+        SUM(CASE WHEN direction = 'IN' THEN 1 ELSE 0 END) as incoming,
+        SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END) as outgoing,
+        ROUND(AVG(CASE WHEN ai_score > 0 THEN ai_score END), 1) as avg_score
        FROM calls
-       WHERE created_at >= date('now', '-6 days') AND recording_path IS NOT NULL
-       GROUP BY date(created_at)
-       ORDER BY date ASC`
+       WHERE ${whereClause} AND recording_path IS NOT NULL
+       GROUP BY ${dateExpr}
+       ORDER BY date ASC`,
+      params
     );
     return rowsToObjects(result);
   },
 
-  getTeamAnalytics: () => {
+  getTeamAnalytics: (startDate, endDate) => {
     if (!db) return [];
+    const dateExpr = `date(COALESCE(c.start_time, c.created_at))`;
+    let whereClause = `c.recording_path IS NOT NULL`;
+    let params = [];
+    if (startDate && endDate) {
+      whereClause += ` AND ${dateExpr} >= date(?) AND ${dateExpr} <= date(?)`;
+      params = [startDate, endDate];
+    }
     const result = db.exec(
-      `SELECT COALESCE(c.team_name, a.team_name, '미지정') as team, COUNT(*) as count
+      `SELECT COALESCE(c.team_name, a.team_name, '미지정') as team,
+        COUNT(*) as count,
+        COALESCE(SUM(c.duration), 0) as total_duration
        FROM calls c
        LEFT JOIN agents a ON a.phone_number = REPLACE(c.uploader_phone, '+82', '0')
-       WHERE c.recording_path IS NOT NULL
+       WHERE ${whereClause}
        GROUP BY team
-       ORDER BY count DESC`
+       ORDER BY count DESC`,
+      params
     );
     return rowsToObjects(result);
   },

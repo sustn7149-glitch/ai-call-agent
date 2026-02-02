@@ -52,7 +52,10 @@ app.post('/api/webhook/call', async (req, res) => {
             startTime: new Date().toISOString()
           }), 'EX', 7200);
         } else if (status === 'IDLE') {
-          await redis.del(`call_state:${userPhone}`);
+          await redis.set(`call_state:${userPhone}`, JSON.stringify({
+            status: 'idle',
+            startTime: new Date().toISOString()
+          }), 'EX', 7200);
         }
       } catch (redisErr) {
         console.error('[Webhook] Redis call state error:', redisErr.message);
@@ -137,15 +140,15 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
 // Heartbeat
 app.post('/api/heartbeat', async (req, res) => {
-  const { userName, userPhone } = req.body;
-  console.log(`[Heartbeat] ${userName} (${userPhone}) is online`);
+  const { userName, userPhone, appVersion } = req.body;
+  console.log(`[Heartbeat] ${userName} (${userPhone}) v${appVersion || '?'} is online`);
 
   // Normalize phone: +821012345678 -> 01012345678
   const normalizedPhone = userPhone ? userPhone.replace(/^\+82/, '0') : userPhone;
 
   // Auto-register agent in DB (name only, preserves team assignment)
   try {
-    db.ensureAgentExists(normalizedPhone, userName);
+    db.ensureAgentExists(normalizedPhone, userName, appVersion);
   } catch (e) {
     console.error('[Heartbeat] Agent auto-register failed:', e.message);
   }
@@ -155,6 +158,7 @@ app.post('/api/heartbeat', async (req, res) => {
     const value = JSON.stringify({
       userName,
       userPhone,
+      appVersion: appVersion || null,
       lastSeen: new Date().toISOString()
     });
     await redis.set(key, value, 'EX', 7200);
@@ -243,6 +247,7 @@ app.get('/api/online-agents', async (req, res) => {
         const agent = JSON.parse(data);
         const teamName = db.getAgentTeam(agent.userPhone);
         agent.teamName = teamName || null;
+        // appVersion is already in the Redis data from heartbeat
         agents.push(agent);
       }
     }
@@ -411,7 +416,8 @@ app.delete('/api/teams/:id', (req, res) => {
 // Analytics
 app.get('/api/analytics/daily', (req, res) => {
   try {
-    res.json(db.getDailyAnalytics());
+    const { startDate, endDate } = req.query;
+    res.json(db.getDailyAnalytics(startDate, endDate));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -420,7 +426,8 @@ app.get('/api/analytics/daily', (req, res) => {
 
 app.get('/api/analytics/team', (req, res) => {
   try {
-    res.json(db.getTeamAnalytics());
+    const { startDate, endDate } = req.query;
+    res.json(db.getTeamAnalytics(startDate, endDate));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

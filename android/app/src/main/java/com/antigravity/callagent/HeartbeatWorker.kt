@@ -25,7 +25,8 @@ class HeartbeatWorker(
         }
 
         return try {
-            val request = HeartbeatRequest(userName = userName, userPhone = userPhone)
+            val appVersion = try { BuildConfig.VERSION_NAME } catch (_: Exception) { "" }
+            val request = HeartbeatRequest(userName = userName, userPhone = userPhone, appVersion = appVersion)
             val response = NetworkModule.api.sendHeartbeat(request)
 
             if (response.isSuccessful) {

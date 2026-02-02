@@ -21,7 +21,9 @@ data class CallEventRequest(
     val number: String,
     val status: String,
     val direction: String,
-    val duration: Long = 0
+    val duration: Long = 0,
+    val userPhone: String = "",
+    val userName: String = ""
 )
 
 data class CallEventResponse(
@@ -36,7 +38,8 @@ data class UploadResponse(
 
 data class HeartbeatRequest(
     val userName: String,
-    val userPhone: String
+    val userPhone: String,
+    val appVersion: String = ""
 )
 
 data class HeartbeatResponse(

@@ -347,6 +347,7 @@ function AgentManagement() {
               <th className={TH} style={TH_STYLE}>전화번호</th>
               <th className={TH} style={TH_STYLE}>이름</th>
               <th className={TH} style={TH_STYLE}>소속 팀</th>
+              <th className={TH} style={TH_STYLE}>앱 버전</th>
               <th className={TH} style={TH_STYLE}>가입일</th>
               <th className={TH} style={TH_STYLE}>관리</th>
             </tr>
@@ -354,7 +355,7 @@ function AgentManagement() {
           <tbody>
             {agents.length === 0 ? (
               <tr>
-                <td colSpan={6} className="border border-gray-300 text-center text-[12px] text-gray-400 py-6">
+                <td colSpan={7} className="border border-gray-300 text-center text-[12px] text-gray-400 py-6">
                   등록된 직원이 없습니다
                 </td>
               </tr>
@@ -386,6 +387,9 @@ function AgentManagement() {
                         </select>
                         {isSaving && <span className="text-[10px] text-gray-400">저장중...</span>}
                       </div>
+                    </td>
+                    <td className={`${TD} text-gray-500 font-mono`}>
+                      {agent.app_version || '-'}
                     </td>
                     <td className={`${TD} text-gray-500 whitespace-nowrap`}>
                       {agent.created_at ? new Date(agent.created_at).toLocaleDateString('ko-KR') : '-'}

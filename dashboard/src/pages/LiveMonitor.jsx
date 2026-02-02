@@ -95,12 +95,15 @@ export default function LiveMonitor() {
             [normPhone]: stateVal
           }))
         } else if (data.status === 'IDLE') {
-          setCallStates(prev => {
-            const next = { ...prev }
-            delete next[rawPhone]
-            delete next[normPhone]
-            return next
-          })
+          const idleVal = {
+            status: 'idle',
+            startTime: new Date().toISOString()
+          }
+          setCallStates(prev => ({
+            ...prev,
+            [rawPhone]: idleVal,
+            [normPhone]: idleVal
+          }))
         }
       }
       setTimeout(() => {
@@ -177,7 +180,7 @@ export default function LiveMonitor() {
       if (!teams[t]) teams[t] = { name: t, total: 0, oncall: 0, todayCalls: 0 }
       teams[t].total++
       teams[t].todayCalls += a.totalCalls
-      if (callStates[a.phone]) teams[t].oncall++
+      if (callStates[a.phone]?.status === 'oncall') teams[t].oncall++
     })
     return Object.values(teams).sort((a, b) => b.todayCalls - a.todayCalls)
   })()
@@ -187,9 +190,11 @@ export default function LiveMonitor() {
     : mergedAgents
 
   const sortedAgents = [...filteredAgents].sort((a, b) => {
-    const aOncall = callStates[a.phone] ? 1 : 0
-    const bOncall = callStates[b.phone] ? 1 : 0
-    if (aOncall !== bOncall) return bOncall - aOncall
+    const aSt = callStates[a.phone]?.status
+    const bSt = callStates[b.phone]?.status
+    const aRank = aSt === 'oncall' ? 2 : aSt === 'idle' ? 1 : 0
+    const bRank = bSt === 'oncall' ? 2 : bSt === 'idle' ? 1 : 0
+    if (aRank !== bRank) return bRank - aRank
     return b.totalCalls - a.totalCalls
   })
 
@@ -212,7 +217,7 @@ export default function LiveMonitor() {
   }
 
   const totalOnline = mergedAgents.length
-  const totalOncall = mergedAgents.filter(a => callStates[a.phone]).length
+  const totalOncall = mergedAgents.filter(a => callStates[a.phone]?.status === 'oncall').length
   const totalCallsToday = mergedAgents.reduce((s, a) => s + a.totalCalls, 0)
 
   return (
@@ -307,8 +312,9 @@ export default function LiveMonitor() {
               </tr>
             ) : (
               sortedAgents.map((agent, idx) => {
-                const isOncall = !!callStates[agent.phone]
                 const state = callStates[agent.phone]
+                const isOncall = state?.status === 'oncall'
+                const isIdle = state?.status === 'idle'
                 return (
                   <tr key={agent.phone}
                     className={isOncall ? 'bg-green-50' : 'hover:bg-blue-50'}
@@ -322,6 +328,11 @@ export default function LiveMonitor() {
                           <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                           상담중
                         </span>
+                      ) : isIdle ? (
+                        <span className="text-gray-500 flex items-center justify-center gap-1">
+                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-400" />
+                          대기중
+                        </span>
                       ) : (
                         <span className="text-gray-400">대기</span>
                       )}
@@ -329,6 +340,8 @@ export default function LiveMonitor() {
                     <td className={`${TD} font-mono`}>
                       {isOncall ? (
                         <span className="text-green-700 font-bold">{getElapsedText(agent.phone)}</span>
+                      ) : isIdle ? (
+                        <span className="text-gray-400">{getElapsedText(agent.phone)}</span>
                       ) : '-'}
                     </td>
                     <td className={`${TD} font-mono text-gray-600 text-[10px]`}>
